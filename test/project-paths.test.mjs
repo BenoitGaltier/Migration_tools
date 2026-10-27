@@ -6,10 +6,21 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { selectMigrationProjectFile, selectPublishedProjectFile, validateMigrationProjectPath } from "../lib/project-paths.mjs";
+import { selectMigrationProjectFile, selectPublishedProjectFile, validateMigrationProjectPath, childMigrationWorkspace } from "../lib/project-paths.mjs";
 import { detachManagedProject, managedProjectGuid } from "../lib/project-designer.mjs";
 const run = promisify(execFile);
 const nested = "iQ Bridge ZB/Carte_Pool_Bridge.PrjPcb";
+
+test("child migration workspaces cannot overlap another repository or reserved transfer data", () => {
+  const root = path.resolve(os.tmpdir(), "altium-child-layout"), working = path.join(root, "working-copy");
+  const first = childMigrationWorkspace(working, root, "../child-a");
+  assert.equal(first, path.join(root, "child-a"));
+  assert.equal(childMigrationWorkspace(working, root, "../child-b", [first]), path.join(root, "child-b"));
+  for (const relative of ["../child-a", "../child-a/nested", "..", "inside-parent", "../../outside", "../source.git", "../child-origins/a", "../destination-audit-x"]) {
+    assert.throws(() => childMigrationWorkspace(working, root, relative, [first]), /overlap|dedicated migration/);
+  }
+  assert.throws(() => childMigrationWorkspace(working, root, "../child-a", [path.join(root, "child-a", "nested")]), /overlap/);
+});
 
 test("finds the native relocated project by its destination GUID and rejects ambiguous or wrong bindings", async () => {
   const guid = "5169F031-0FC6-40AF-B42F-F11DCF7D6B88";

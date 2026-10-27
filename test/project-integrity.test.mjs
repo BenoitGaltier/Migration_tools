@@ -28,3 +28,10 @@ test("reads Git's unquoted NUL-delimited manifest without changing Unicode paths
   assert.deepEqual(gitTreeEntries(`100644 blob ${"a".repeat(40)}\tµ board.PcbDoc\0`), [entry("µ board.PcbDoc")]);
   assert.throws(() => gitTreeEntries("not a Git manifest\0"), /Invalid/);
 });
+test("allows only planned multiboard blob transformations and preserves embedded child project files",()=>{
+  const source=[entry("System.PrjMbd"),entry("Overview.MbsDoc"),entry("Child.PrjPcb")],target=source.map(f=>({...f}));target[0].oid="b".repeat(40);target[1].oid="c".repeat(40);
+  const options={sourceProjectFilename:"System.PrjMbd",transformations:[{path:"Overview.MbsDoc",sourceOid:source[1].oid,targetOid:target[1].oid,purpose:"verified-global-child-links"}]};
+  assert.equal(assertSourceFilesPreserved(source,target,options).transformedFiles,1);
+  target[2].oid="b".repeat(40);assert.throws(()=>assertSourceFilesPreserved(source,target,options),/Child.PrjPcb/);
+  target[2].oid=source[2].oid;target[1].oid="d".repeat(40);assert.throws(()=>assertSourceFilesPreserved(source,target,options),/Overview.MbsDoc/);
+});
