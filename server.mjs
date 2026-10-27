@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { promisify } from "node:util";
 import { embeddedModelRevisionGuid, removeSourceRevisionBindings } from "./lib/model-bindings.mjs";
@@ -18,20 +18,23 @@ import { projectNativeRequest } from "./lib/project-native-request.mjs";
 import { projectFolderRow, projectPublicationPath, projectPlacementDetailsUrl, assertProjectFolderPlacement } from "./lib/project-folder.mjs";
 import { selectMigrationProjectFile, selectPublishedProjectFile, validateMigrationProjectPath } from "./lib/project-paths.mjs";
 import { projectCloudState, projectDesignDocuments, waitForProjectCloudData } from "./lib/project-cloud.mjs";
+import { gitTreeEntries, assertProjectDocuments, assertSourceFilesPreserved } from "./lib/project-integrity.mjs";
+import { saveProjectJournal } from "./lib/project-journal.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dataRoot = path.resolve(process.env.ALTIUM_DATA_ROOT || __dirname);
 const publicDir = path.join(__dirname, "public");
 const configPath = path.join(__dirname, "config", "operations.json");
-const envPath = path.join(__dirname, ".env");
-const cacheDir = path.join(__dirname, "cache");
-const migrationStatePath = path.join(__dirname, "migration_state", "model-map.json");
-const completedMigrationPath = path.join(__dirname, "migration_state", "completed.json");
-const parameterMappingsPath = path.join(__dirname, "migration_state", "parameter-mappings.json");
-const templateDefinitionsPath = path.join(__dirname, "cache", "target-template-definitions.json");
-const dictionaryValuesPath = path.join(__dirname, "cache", "target-dictionary-values.json");
-const projectAnalysisCachePath = path.join(__dirname, "cache", "project-migration-analyses.json");
-const footprintBindingCachePath = path.join(__dirname, "cache", "footprint-binding-diagnostics.json");
-const migrationLogsDir = path.join(__dirname, "migration_logs");
+const envPath = path.join(dataRoot, ".env");
+const cacheDir = path.join(dataRoot, "cache");
+const migrationStatePath = path.join(dataRoot, "migration_state", "model-map.json");
+const completedMigrationPath = path.join(dataRoot, "migration_state", "completed.json");
+const parameterMappingsPath = path.join(dataRoot, "migration_state", "parameter-mappings.json");
+const templateDefinitionsPath = path.join(dataRoot, "cache", "target-template-definitions.json");
+const dictionaryValuesPath = path.join(dataRoot, "cache", "target-dictionary-values.json");
+const projectAnalysisCachePath = path.join(dataRoot, "cache", "project-migration-analyses.json");
+const footprintBindingCachePath = path.join(dataRoot, "cache", "footprint-binding-diagnostics.json");
+const migrationLogsDir = path.join(dataRoot, "migration_logs");
 const renderCacheDir = path.join(cacheDir, "library-renders");
 const rendererDllPath = path.join(__dirname, "renderer", "runtime", "Fluidra.AltiumRenderer.dll");
 const execFileAsync = promisify(execFile);
@@ -42,7 +45,7 @@ const MODEL_TRANSFER_VERSION = 2;
 const TEMPLATE_DEFINITIONS_VERSION = 3;
 const DICTIONARY_VALUES_VERSION = 2;
 const LIBRARY_RENDER_VERSION = 7;
-const PROJECT_ANALYSIS_VERSION = 10;
+const PROJECT_ANALYSIS_VERSION = 11;
 
 // Keep the local URL stable across updates and troubleshooting sessions.
 const PORT = 4173;
@@ -73,6 +76,7 @@ const projectAnalysisCache = new Map();
 let projectAnalysisCacheLoaded = false;
 let footprintBindingDiagnosticsLoad = null;
 const activeProjectTransfers = new Set();
+const projectCloudWaitOptions = {};
 
 function configureSystemCertificates(env) {
   if (env.ALTIUM_USE_SYSTEM_CA === "false") return;
@@ -734,14 +738,13 @@ async function invalidateProjectAnalysis(projectId = null) {
 
 function projectTransferRecordPath(projectId) {
   const key = createHash("sha256").update(`${endpoints.source}|${endpoints.target}|${projectId}`).digest("hex");
-  return path.join(__dirname, "migration_state", "project-transfers", `${key}.json`);
+  return path.join(dataRoot, "migration_state", "project-transfers", `${key}.json`);
 }
 
 async function saveProjectTransfer(record) {
   const filename = projectTransferRecordPath(record.sourceProjectId);
   await mkdir(path.dirname(filename), { recursive: true });
-  await writeFile(`${filename}.tmp`, JSON.stringify({ ...record, updatedAt: new Date().toISOString() }, null, 2));
-  await rename(`${filename}.tmp`, filename);
+  await saveProjectJournal(filename, { ...record, updatedAt: new Date().toISOString() });
   await invalidateProjectAnalysis(record.sourceProjectId);
 }
 
@@ -754,18 +757,23 @@ async function recoverableProjectTransfer(project, folder, duplicates, { include
   if (sourceOrigin !== project.repositoryUrl) return null;
   const currentSourceHead = (await git(["ls-remote", project.repositoryUrl, "HEAD"], tokens.source)).stdout.trim().split(/\s+/)[0];
   if (record.sourceHead && record.sourceHead !== currentSourceHead) throw new Error("The source changed since the interrupted transfer; inspect the saved migration before resuming.");
-  if (duplicates.length !== 1) return null;
-  const expectedGuid = record.targetProjectGuid || duplicates[0].projectId;
-  const projectFilename = await publishedProjectWorkingCopyFile(record.localWorkingCopy, expectedGuid);
+  if (duplicates.length > 1) throw new Error("Several destination projects match the interrupted transfer; inspect them before resuming.");
+  const expectedGuid = record.targetProjectGuid || duplicates[0]?.projectId;
+  const projectFilename = expectedGuid ? await publishedProjectWorkingCopyFile(record.localWorkingCopy, expectedGuid) : record.projectFilename;
   const guid = managedProjectGuid(await readFile(path.join(record.localWorkingCopy, projectFilename)));
-  if (!guid || duplicates.length !== 1 || guid.toLowerCase() !== duplicates[0].projectId.toLowerCase()) return null;
+  if (!guid || (duplicates.length && guid.toLowerCase() !== duplicates[0].projectId.toLowerCase())) throw new Error("The saved copy cannot be associated with the interrupted destination. No new publication is permitted.");
   if (record.targetProjectGuid && guid.toLowerCase() !== record.targetProjectGuid.toLowerCase()) return null;
+  const workspaceGuid = record.targetWorkspaceGuid || duplicates[0]?.id?.match(/workspace:([^:]+):/)?.[1];
+  if (!workspaceGuid) throw new Error("The interrupted publication has no recorded destination workspace identifier; inspect Designer before resuming.");
+  const targetProjectId = record.targetProjectId || `grid:workspace:${workspaceGuid}:design:project/${guid}`;
+  const target = await targetProjectRepository(targetProjectId, { allowExternal: true });
+  if (target.projectId.toLowerCase() !== guid.toLowerCase() || target.name !== project.name) throw new Error("Interrupted destination identity does not match the recorded project.");
   if (!projectFolderRow(await targetProjectEntity(guid), folder)) return null;
   // A completed transfer must also exist as a proper project folder in A365.
   // Keep incomplete transfers recoverable on the same GUID.
   const placementVerification = record.phase === "completed" ? await verifyTargetProjectPlacement(guid, project.name, folder) : null;
   return { ...record, sourceProjectFilename: record.sourceProjectFilename || record.projectFilename,
-    projectFilename, targetProjectGuid: guid, targetProjectId: duplicates[0].id, placementVerification };
+    projectFilename, targetProjectGuid: guid, targetProjectId, placementVerification };
 }
 
 async function publishedProjectWorkingCopyFile(workingCopy, projectGuid) {
@@ -790,6 +798,8 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
   const duplicates = await findTargetProjectsByName(project.name || "");
   const blockers = [];
   const warnings = [];
+  const catalogCollision = (await listTargetFolders("projects")).find((candidate) => candidate.path.replaceAll("\\", "/").toLowerCase() === projectPublicationPath(folder, project.name).replaceAll("\\", "/").toLowerCase());
+  if (catalogCollision) blockers.push("A project catalog already occupies the destination project folder path. Select a different catalog before publication.");
   if (!reuseEmptyTarget && project.projectType !== "PCB_PROJECT") {
     blockers.push("Native Designer migration currently supports PCB projects (.PrjPcb) only. No project will be published for this project type.");
   }
@@ -817,7 +827,8 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
       blockers.push(`The source Git repository cannot be read: ${error.message}`);
     }
   }
-  if (!reuseEmptyTarget && duplicates.length) {
+  const previousTransfer = !reuseEmptyTarget ? await readJsonFile(projectTransferRecordPath(project.id), null) : null;
+  if (!reuseEmptyTarget && (duplicates.length || previousTransfer)) {
     try {
       const transfer = await recoverableProjectTransfer(project, folder, duplicates, { includeCompleted: true });
       if (transfer?.phase === "completed") completedTransfer = transfer;
@@ -825,7 +836,7 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
     }
     catch (error) {
       if (error.code === "PROJECT_FOLDER_INVALID") { placementInvalid = true; blockers.push(error.message); }
-      else warnings.push(`The previous local transfer cannot be resumed: ${error.message}`);
+      else blockers.push(`The previous local transfer cannot be resumed: ${error.message}`);
     }
     if (!resumeTransfer && !completedTransfer && !placementInvalid) blockers.push("A project with the same name already exists in the target workspace and is not identified as an unfinished transfer from this app. No new project will be created.");
     else if (resumeTransfer) {
@@ -871,6 +882,7 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
     creationMode: reuseEmptyTarget ? "reuse-empty" : placementInvalid ? "placement-invalid" : completedTransfer ? "completed" : resumeTransfer ? "designer-resume" : "designer-native",
     resumeTransfer,
     alreadyMigrated: Boolean(completedTransfer),
+    awaitingCloud: resumeTransfer?.phase === "cloud-validation-pending",
     placementVerification: completedTransfer?.placementVerification || null,
     existingTargetProject,
     emptyTargetCheck,
@@ -891,9 +903,10 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
 }
 
 async function projectDesignerReadiness(report, reuseEmptyTarget) {
+  if (report.awaitingCloud) return { ...report, executable: report.blockers.length === 0 };
   if (report.alreadyMigrated) {
     try {
-      const placementVerification = await verifyTargetProjectPlacement(report.targetDuplicates[0].projectId, report.project.name, report.targetFolder);
+      const placementVerification = await verifyTargetProjectPlacement(report.placementVerification?.projectFolderId || report.targetDuplicates[0]?.projectId, report.project.name, report.targetFolder);
       return { ...report, placementVerification };
     } catch (error) { return { ...report, placementVerification: null, alreadyMigrated: false, creationMode: "placement-invalid", executable: false, blockers: [...report.blockers, error.message] }; }
   }
@@ -911,6 +924,7 @@ async function projectDesignerReadiness(report, reuseEmptyTarget) {
       throw new Error("Load Designer bridge 1.1.35 or later to enable native project publication.");
     }
     designer = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
+    if (!designer.projectFolderBindingSupported) throw new Error("Load Designer bridge 1.1.37 or later for native project folder verification.");
   } catch (error) { blockers.push(error.message); }
   return { ...report, designer, blockers, executable: blockers.length === 0 };
 }
@@ -1011,6 +1025,18 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
   const filename = selectMigrationProjectFile(listing.stdout.split("\0").filter(Boolean), project.name, resumeTransfer?.projectFilename);
   const projectPaths = await validateMigrationProjectPath(workingCopy, filename);
   const { projectFullPath, workingCopyPath } = projectPaths;
+  if (!resumeTransfer) {
+    const tree = gitTreeEntries((await git([`--git-dir=${mirrorPath}`, "ls-tree", "-r", "-z", "HEAD"], tokens.source)).stdout);
+    const bytes = await readFile(projectFullPath);
+    if (managedProjectGuid(bytes).toLowerCase() !== project.projectId.toLowerCase()) throw new Error("The selected project file is not bound to the requested source project. No project was published.");
+    assertProjectDocuments(filename, bytes, tree);
+    for (const entry of tree) {
+      if (/\.(SchDoc|PcbDoc|PrjPcb|SchLib|PcbLib)$/i.test(entry.path)) {
+        const blob = await git([`--git-dir=${mirrorPath}`, "cat-file", "-s", entry.oid], tokens.source);
+        if (Number(blob.stdout) < 1024 && (await git([`--git-dir=${mirrorPath}`, "show", entry.oid], tokens.source)).stdout.startsWith("version https://git-lfs.github.com/spec/")) throw new Error(`Git LFS document requires its original binary before migration: ${entry.path}`);
+      }
+    }
+  }
   if (projectPaths.nestedProject) {
     const status = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
     if (!status.nestedProjectPathsSupported) throw new Error("Load Designer bridge 1.1.36 or later to migrate a PCB project stored in a Git subfolder. No project was published.");
@@ -1026,6 +1052,8 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
     await git(["-C", workingCopy, "-c", "user.name=Altium Migration Assistant", "-c", "user.email=altium-migration@localhost",
       "commit", "--allow-empty", "-m", "Detach migration copy from source workspace"], tokens.source);
     await git(["-C", workingCopy, "push", "origin", "HEAD"], tokens.source);
+    const destination = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
+    record = { ...record, phase: "publication-in-flight", targetWorkspaceGuid: destination.workspaceGuid };
     await saveProjectTransfer(record);
     published = await projectNativeRequest(altiumDesignerBridgeUrl, altiumDesignerBridgeToken, "/v1/projects/publish-migration", {
       projectFullPath, workingCopyPath, name: project.name, description: nativeProjectDescription(project.description),
@@ -1058,6 +1086,10 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
   const publishedFilename = await publishedProjectWorkingCopyFile(workingCopy, guid);
   record = { ...record, sourceProjectFilename: record.sourceProjectFilename || record.projectFilename, projectFilename: publishedFilename };
   await saveProjectTransfer(record);
+  if (!workspace.projectFolderBindingSupported) throw new Error("Load Designer bridge 1.1.37 or later to verify and complete the native project folder binding.");
+  await projectNativeRequest(altiumDesignerBridgeUrl, altiumDesignerBridgeToken, "/v1/projects/ensure-migration-folder", {
+    projectGuid: guid, catalogGuid: folder.folderId, name: project.name, workspaceUrl: endpoints.target
+  });
   const targetEntity = await targetProjectEntity(guid);
   if (!projectFolderRow(targetEntity, folder)) {
     throw new Error(`Designer created project ${guid} outside the selected destination folder. Inspect it before retrying.`);
@@ -1099,7 +1131,11 @@ async function verifyDesignerProjectHistory(project, mirrorPath, tempRoot, sourc
     throw new Error("The published default branch is not bound to the destination project. No successful migration was recorded.");
   }
   const expectedDocuments = projectDesignDocuments(savedProject.stdout);
-  return { ...verification, projectFilename: publishedFilename, targetHead, expectedDocuments };
+  const sourceTree = gitTreeEntries((await git([`--git-dir=${mirrorPath}`, "ls-tree", "-r", "-z", sourceHead], tokens.source)).stdout);
+  const targetTree = gitTreeEntries((await git([`--git-dir=${audit}`, "ls-tree", "-r", "-z", targetHead], tokens.target)).stdout);
+  assertProjectDocuments(publishedFilename, savedProject.stdout, targetTree);
+  const fileVerification = assertSourceFilesPreserved(sourceTree, targetTree);
+  return { ...verification, projectFilename: publishedFilename, sourceHead, targetHead, expectedDocuments, fileVerification };
 }
 
 async function verifyPublishedProjectCloud(project, historyVerification) {
@@ -1116,10 +1152,40 @@ async function verifyPublishedProjectCloud(project, historyVerification) {
     if (!targetHead || current?.latestRevision?.revisionId !== targetHead) throw new Error("The destination changed during cloud validation. Inspect the existing target before resuming.");
     return projectCloudState({ projectGuid: project.projectId, targetHead, details,
       variants: current?.design?.variants || [], expectedDocuments: historyVerification.expectedDocuments || (current?.latestRevision?.files || []).map((file) => file.path) });
-  });
+  }, projectCloudWaitOptions);
+}
+
+async function finishProjectCloudValidation(project, folder, targetProject, record, creationMode) {
+  const historyVerification = record.historyVerification;
+  if (!historyVerification?.verified || !historyVerification.fileVerification?.verified) throw httpError(409, "The saved transfer has no complete Git and file proof; inspect the existing target before resuming.");
+  const placementVerification = await verifyTargetProjectPlacement(targetProject.projectId, project.name, folder);
+  let cloudVerification;
+  try { cloudVerification = await verifyPublishedProjectCloud(targetProject, historyVerification); }
+  catch (error) {
+    if (!error.cloudVerification) throw error;
+    cloudVerification = error.cloudVerification;
+  }
+  const status = cloudVerification.verified ? "migrated" : "awaiting-cloud";
+  await saveProjectTransfer({ ...record, phase: cloudVerification.verified ? "completed" : "cloud-validation-pending", placementVerification, cloudVerification, releaseStrategy: "source-workspace" });
+  return { status, sourceProjectId: project.id, targetProjectId: targetProject.id, targetProjectUrl: targetProject.url,
+    historyRevisions: project.revisions?.totalCount || 0, historyVerification, placementVerification, cloudVerification,
+    creationMode, releaseStrategy: "source-workspace", sourceProjectUrl: project.url, localWorkingCopy: record.localWorkingCopy };
+}
+
+async function validateProjectTransfer(projectId, targetFolderId) {
+  const record = await readJsonFile(projectTransferRecordPath(projectId), null);
+  if (!record || record.targetEndpoint !== endpoints.target || record.targetFolderId !== targetFolderId
+      || !["cloud-validation-pending", "completed"].includes(record.phase)) throw httpError(409, "No completed Git transfer is available for read-only validation.");
+  const [project, folder, targetProject] = await Promise.all([projectMigrationDetails(projectId),
+    resolveTargetFolder("projects", targetFolderId), targetProjectRepository(record.targetProjectId)]);
+  if (targetProject.projectId.toLowerCase() !== record.targetProjectGuid.toLowerCase()) throw httpError(409, "Destination identity changed; inspect the saved transfer.");
+  return finishProjectCloudValidation(project, folder, targetProject, record, "cloud-validation");
 }
 
 async function migrateProjectWithHistory(projectId, targetFolderId, reuseEmptyTarget = false) {
+  const previous = await readJsonFile(projectTransferRecordPath(projectId), null);
+  if (!reuseEmptyTarget && previous?.targetFolderId === targetFolderId && ["cloud-validation-pending", "completed"].includes(previous.phase)
+      && previous.historyVerification?.fileVerification?.verified) return validateProjectTransfer(projectId, targetFolderId);
   const analysis = await projectMigrationPreflight(projectId, targetFolderId, true, reuseEmptyTarget);
   if (!analysis.executable) throw httpError(409, `Migration blocked: ${analysis.blockers.join(" ")}`);
   const [project, folder] = await Promise.all([
@@ -1160,14 +1226,16 @@ async function migrateProjectWithHistory(projectId, targetFolderId, reuseEmptyTa
       const record = await readJsonFile(projectTransferRecordPath(projectId), null);
       if (record) await saveProjectTransfer({ ...record, phase: "cloud-validation-pending", historyVerification, placementVerification });
     }
-    const cloudVerification = await verifyPublishedProjectCloud(targetProject, historyVerification);
+    let cloudVerification;
+    try { cloudVerification = await verifyPublishedProjectCloud(targetProject, historyVerification); }
+    catch (error) { if (!error.cloudVerification) throw error; cloudVerification = error.cloudVerification; }
     await invalidateProjectAnalysis(projectId);
     if (!reuseEmptyTarget) {
       const record = await readJsonFile(projectTransferRecordPath(projectId), null);
-      if (record) await saveProjectTransfer({ ...record, phase: "completed", placementVerification, cloudVerification, releaseStrategy: "source-workspace" });
+      if (record) await saveProjectTransfer({ ...record, phase: cloudVerification.verified ? "completed" : "cloud-validation-pending", placementVerification, cloudVerification, releaseStrategy: "source-workspace" });
     }
     const result = {
-      status: "migrated",
+      status: cloudVerification.verified ? "migrated" : "awaiting-cloud",
       sourceProjectId: project.id,
       targetProjectId: targetProject.id,
       targetProjectUrl: targetProject.url,
@@ -3343,12 +3411,14 @@ async function handleApi(req, res, url) {
       return;
     }
     if (url.pathname === "/api/settings" && req.method === "POST") {
+      if (activeProjectTransfers.size) throw httpError(409, "Wait for the active project transfer before changing workspace settings.");
       const body = await readJsonBody(req);
       const settings = await saveEditableSettings(body);
       sendJson(res, 200, { ok: true, settings, ...publicConfig() });
       return;
     }
     if (url.pathname === "/api/source-workspace" && req.method === "POST") {
+      if (activeProjectTransfers.size) throw httpError(409, "Wait for the active project transfer before changing the source workspace.");
       const body = await readJsonBody(req);
       if (!sourceWorkspaces.some((workspace) => workspace.id === body.id)) {
         throw httpError(400, "Unknown source workspace");
@@ -3451,7 +3521,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, await projectMigrationPreflight(body.projectId, body.targetFolderId, body.refresh === true, body.reuseEmptyTarget === true));
       return;
     }
-    if (url.pathname === "/api/projects-migration/migrate" && req.method === "POST") {
+    if (["/api/projects-migration/migrate", "/api/projects-migration/validate"].includes(url.pathname) && req.method === "POST") {
       const body = await readJsonBody(req);
       if (body.dryRun === true) {
         sendJson(res, 200, await projectMigrationPreflight(body.projectId, body.targetFolderId, false, body.reuseEmptyTarget === true));
@@ -3461,7 +3531,8 @@ async function handleApi(req, res, url) {
       if (activeProjectTransfers.has(transferKey)) throw httpError(409, "A migration of this project is already running");
       activeProjectTransfers.add(transferKey);
       try {
-        sendJson(res, 200, await migrateProjectWithHistory(body.projectId, body.targetFolderId, body.reuseEmptyTarget === true));
+        sendJson(res, 200, url.pathname.endsWith("/validate") ? await validateProjectTransfer(body.projectId, body.targetFolderId)
+          : await migrateProjectWithHistory(body.projectId, body.targetFolderId, body.reuseEmptyTarget === true));
       } finally {
         activeProjectTransfers.delete(transferKey);
       }
@@ -3798,14 +3869,21 @@ async function serveStatic(res, pathname) {
   }
 }
 
-createServer(async (req, res) => {
+export function createApplicationServer({ projectCloudWait } = {}) {
+  if (projectCloudWait) Object.assign(projectCloudWaitOptions, projectCloudWait);
+  return createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname.startsWith("/api/")) {
     await handleApi(req, res, url);
     return;
   }
   await serveStatic(res, url.pathname);
-}).listen(PORT, () => {
-  console.log(`Altium migration assistant: http://localhost:${PORT}`);
-});
+  });
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  createApplicationServer().listen(PORT, () => {
+    console.log(`Altium migration assistant: http://localhost:${PORT}`);
+  });
+}
 

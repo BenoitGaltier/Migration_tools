@@ -12,6 +12,7 @@ const messages = {
     noTargetProjects: "Aucun projet dans ce répertoire", loadingTargetProjects: "Chargement des projets de destination…",
     designerPublish: "Publication par Altium Designer",
     resumeProject: "Reprendre la migration", resumeNotice: "Reprise du projet déjà créé par l’app : aucune nouvelle création.",
+    verifyCloud: "Vérifier la publication cloud", pendingCloud: "Historique et fichiers vérifiés — génération cloud à confirmer", pendingNotice: "Le transfert est conservé. Cette vérification relit le même projet cible sans relancer Designer ni créer un projet.",
     alreadyMigrated: "Déjà migré — historique vérifié", completedNotice: "Migration terminée sur le projet cible existant. Aucune nouvelle migration n’est nécessaire.",
     designerConfirm: "Designer peut demander de confirmer « Migrate Project » : validez Migrer, puis OK. L’app vérifie ensuite le dépôt et l’historique avant d’annoncer le succès.",
     settingsHelp: "Les tokens existants restent inchangés quand le champ est vide.", sourceWorkspaces: "Workspaces sources",
@@ -34,6 +35,7 @@ const messages = {
     noTargetProjects: "No hay proyectos en esta carpeta", loadingTargetProjects: "Cargando proyectos de destino…",
     designerPublish: "Publicación mediante Altium Designer",
     resumeProject: "Reanudar migración", resumeNotice: "Se reanudará el proyecto ya creado por la app, sin crear otro.",
+    verifyCloud: "Verificar publicación cloud", pendingCloud: "Historial y archivos verificados — generación cloud pendiente", pendingNotice: "La transferencia se conserva. La verificación consulta el mismo destino sin volver a publicar ni crear otro proyecto.",
     alreadyMigrated: "Ya migrado — historial verificado", completedNotice: "Migración completada en el proyecto de destino existente. No es necesario repetirla.",
     designerConfirm: "Si Designer muestra Migrate Project, confirme Migrate y después OK. La app verificará el repositorio y el historial antes de confirmar el éxito.",
     settingsHelp: "Los tokens existentes no cambian si el campo queda vacío.", sourceWorkspaces: "Workspaces de origen", sourceWorkspacesHelp: "Añada todos los workspaces de origen.",
@@ -55,6 +57,7 @@ const messages = {
     noTargetProjects: "No projects in this folder", loadingTargetProjects: "Loading target projects…",
     designerPublish: "Publish through Altium Designer",
     resumeProject: "Resume migration", resumeNotice: "Resuming the project already created by this app; no new project will be created.",
+    verifyCloud: "Verify cloud publication", pendingCloud: "History and files verified — cloud generation awaiting confirmation", pendingNotice: "The transfer is retained. Verification reads the same target without another Designer command or project creation.",
     alreadyMigrated: "Already migrated — history verified", completedNotice: "Migration completed on the existing destination project. No new migration is needed.",
     designerConfirm: "If Designer displays Migrate Project, confirm Migrate, then OK. The app verifies the repository and history before reporting success.",
     settingsHelp: "Existing tokens remain unchanged when the field is empty.", sourceWorkspaces: "Source workspaces", sourceWorkspacesHelp: "Add every source workspace used for migration.",
@@ -183,7 +186,7 @@ function selectProject(project) {
 
 function updateActions() {
   $("#migrateProject").disabled = state.migrating || !state.report?.executable;
-  $("#migrateProject").textContent = state.report?.alreadyMigrated ? t("alreadyMigrated") : state.report?.resumeTransfer ? t("resumeProject") : t("migrate");
+  $("#migrateProject").textContent = state.report?.awaitingCloud ? t("verifyCloud") : state.report?.alreadyMigrated ? t("alreadyMigrated") : state.report?.resumeTransfer ? t("resumeProject") : t("migrate");
   for (const id of ["#targetFolder", "#sourceWorkspaceSelect", "#refreshProjects"]) $(id).disabled = state.migrating;
 }
 
@@ -211,9 +214,9 @@ function renderReport(report) {
   summary.append(statusCard(t("history"), report.preservation.gitHistory));
   if (report.creationMode?.startsWith("designer-")) summary.append(statusCard(t("designerPublish"), Boolean(report.designer)));
   const verdict = document.createElement("div"); verdict.className = `preflight-verdict ${report.executable || report.alreadyMigrated ? "ok" : "bad"}`;
-  verdict.textContent = report.alreadyMigrated ? t("alreadyMigrated") : report.executable ? t("executable") : t("notExecutable");
+  verdict.textContent = report.awaitingCloud ? t("pendingCloud") : report.alreadyMigrated ? t("alreadyMigrated") : report.executable ? t("executable") : t("notExecutable");
   root.append(verdict, summary);
-  if (report.resumeTransfer) { const notice = document.createElement("p"); notice.className = "api-limitation"; notice.textContent = t("resumeNotice"); root.append(notice); }
+  if (report.resumeTransfer) { const notice = document.createElement("p"); notice.className = "api-limitation"; notice.textContent = report.awaitingCloud ? t("pendingNotice") : t("resumeNotice"); root.append(notice); }
   if (report.alreadyMigrated) { const notice = document.createElement("p"); notice.className = "api-limitation"; notice.textContent = t("completedNotice"); root.append(notice); }
   const blockers = messageList(t("blockers"), report.blockers, "report-blockers"); if (blockers) root.append(blockers);
   const warnings = messageList(t("warnings"), report.warnings, "report-warnings"); if (warnings) root.append(warnings);
@@ -243,7 +246,7 @@ async function analyzeSelectedProject(refresh = false) {
     if (sequence !== analysisSequence) return;
     state.report = report;
     renderReport(report);
-    log(report.alreadyMigrated ? t("alreadyMigrated") : report.executable ? t("executable") : t("notExecutable"), report.alreadyMigrated ? "INFO" : report.executable ? "ANALYSIS" : "WARNING", state.selected.name);
+    log(report.awaitingCloud ? t("pendingCloud") : report.alreadyMigrated ? t("alreadyMigrated") : report.executable ? t("executable") : t("notExecutable"), report.awaitingCloud ? "WARNING" : report.alreadyMigrated ? "INFO" : report.executable ? "ANALYSIS" : "WARNING", state.selected.name);
   } catch (error) {
     if (sequence !== analysisSequence) return;
     state.report = { executable: false, preservation: {}, releases: { retained: [], excludedClosed: [] }, blockers: [error.message], warnings: [] };
@@ -343,12 +346,13 @@ $("#migrateProject").addEventListener("click", async () => {
   const project = state.selected;
   updateActions();
   renderProjects();
-  if (state.report?.creationMode?.startsWith("designer-")) log(t("designerConfirm"), "INFO", project.name);
+  const validationOnly = state.report?.awaitingCloud;
+  if (!validationOnly && state.report?.creationMode?.startsWith("designer-")) log(t("designerConfirm"), "INFO", project.name);
   try {
-    const result = await api("/api/projects-migration/migrate", { method: "POST", body: JSON.stringify({ projectId: project.id,
+    const result = await api(`/api/projects-migration/${validationOnly ? "validate" : "migrate"}`, { method: "POST", body: JSON.stringify({ projectId: project.id,
       targetFolderId: state.folderId, dryRun: false }) });
     $("#analysisStatus").textContent = `${result.status} · ${result.historyRevisions} commits`;
-    log(result, "MIGRATION", project.name);
+    log(result, result.status === "awaiting-cloud" ? "WARNING" : "MIGRATION", project.name);
     await loadProjects(true);
     await loadTargetProjects();
   } catch (error) { state.report = null; log(error.message, "ERROR", project?.name || "Migration"); }

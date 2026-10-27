@@ -36,9 +36,15 @@ git submodule update --init --recursive
 Pour executer les tests depuis PowerShell :
 
 ```powershell
-$tests = Get-ChildItem test -Filter '*.test.mjs' | ForEach-Object FullName
-node --test @tests
+npm test
+./altium-extension/Fluidra.DxpBridge/test.ps1
 ```
+
+Pour installer le controle automatique avant les commits dans ce clone :
+`git config core.hooksPath .githooks`. La CI GitHub execute aussi les tests a
+chaque push et pull request. Le bridge possede son propre workflow Windows.
+Les tests HTTP utilisent des depots temporaires, un faux bridge et des tokens
+fictifs ; ils ne publient aucun projet dans Altium 365.
 
 Application locale de migration de bibliotheques Altium 365. Elle accepte plusieurs
 workspaces sources selectionnables et un workspace cible unique. L'ordre de migration
@@ -88,9 +94,28 @@ Le pre-controle verifie la presence d'un depot Git interne, l'acces au workspace
 et les doublons. Les releases existantes restent dans le workspace source ; leurs liens
 de telechargement ne sont pas utilises par le transfert.
 
+Avant publication, les documents lies sont controles dans le depot source. Apres
+publication, l'app compare les objets Git de tous les fichiers d'origine hors
+fichiers de rattachement `.PrjPcb` et `.PrjPcbStructure`, verifies separement.
+Les branches et tags sont preserves sans remplacer des references cibles existantes.
+Le GUID et la phase du transfert sont journalises avant chaque commande native.
+Une reponse perdue ne permet pas de recreer aveuglement un projet du meme nom.
+
+Le statut `awaiting-cloud` signifie que le depot et les fichiers sont verifies,
+mais que la generation cloud au commit cible reste a confirmer. Le bouton
+**Verifier la publication cloud** effectue uniquement des lectures ; Designer
+peut etre ferme. Il ne republie pas le projet. Des vues GraphQL disponibles avec
+un ancien indicateur de generation a zero restent distinguees d'une generation
+explicitement verifiee au commit courant.
+
+Les audits `scripts/audit-projects.mjs` et `scripts/audit-project-git.mjs` sont en
+lecture seule. Leur option `--env-file` permet d'utiliser la configuration locale
+sans la copier dans une branche de test. Les rapports et depots d'audit restent
+dans `.diagnostics`, ignore par Git.
+
 Le pre-controle verifie l'acces API cible et, a chaque analyse meme mise en cache,
-la connexion de Designer au workspace de destination. Le bridge 1.1.35 ou suivant
-est requis pour la publication native. L'app clone l'historique complet, cree un
+la connexion de Designer au workspace de destination. Le bridge 1.1.37 ou suivant
+est requis pour la publication native et le rattachement du dossier. L'app clone l'historique complet, cree un
 depot local temporaire et une copie de travail, puis vide uniquement
 `Design/ManagedProjectGUID`. Elle ne modifie ni ne pousse jamais le depot source.
 Le fichier `.PrjPcb` peut etre a la racine ou dans un sous-dossier du depot. Designer

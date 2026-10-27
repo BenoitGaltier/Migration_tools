@@ -3,6 +3,11 @@
   "private": true,
   "version": "2026.10.2",
   "description": "Assistant multilingue de migration entre workspaces Altium 365",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "audit:projects": "node --use-system-ca scripts/audit-projects.mjs"
+  },
   "dependencies": {
     "three": "0.186.1"
   }
