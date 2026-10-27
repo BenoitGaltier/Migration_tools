@@ -1,0 +1,52 @@
+diff --git a/src/OriginalCircuit.Altium.Rendering.Core/PcbComponentRenderer.cs b/src/OriginalCircuit.Altium.Rendering.Core/PcbComponentRenderer.cs
+index bf678fa..70ee208 100644
+--- a/src/OriginalCircuit.Altium.Rendering.Core/PcbComponentRenderer.cs
++++ b/src/OriginalCircuit.Altium.Rendering.Core/PcbComponentRenderer.cs
+@@ -309,26 +309,8 @@ public sealed class PcbComponentRenderer
+         if (pad.Rotation != 0)
+             context.Rotate(-pad.Rotation);
+ 
+-        // Draw pad layers from back to front (matching V1 order):
+-        // 1. Bottom solder mask (expanded shape)
+-        // 2. Top solder mask (expanded shape)
+-        // 3. Bottom copper layer
+-        // 4. Top copper layer
+-        var expansion = _transform.ScaleValue(pad.SolderMaskExpansion);
+-
+-        // Bottom solder mask
+-        DrawPadShape(context, pad.ShapeBottom, pad.SizeBottom, pad.CornerRadiusPercentage,
+-            LayerColors.GetColor(38), expansion); // 38 = BottomSolder
+-
+-        // Top solder mask
+-        DrawPadShape(context, pad.ShapeTop, pad.SizeTop, pad.CornerRadiusPercentage,
+-            LayerColors.GetColor(37), expansion); // 37 = TopSolder
+-
+-        // Bottom copper
+-        DrawPadShape(context, pad.ShapeBottom, pad.SizeBottom, pad.CornerRadiusPercentage,
+-            LayerColors.GetColor(pad.Layer), 0);
+-
+-        // Top copper
++        // Mask and paste openings are projected as explicit pads by the caller. Rendering only
++        // this pad's assigned layer lets the UI filter copper, mask and paste independently.
+         DrawPadShape(context, pad.ShapeTop, pad.SizeTop, pad.CornerRadiusPercentage,
+             LayerColors.GetColor(pad.Layer), 0);
+ 
+diff --git a/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs b/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
+index bc66aea..0bb1b40 100644
+--- a/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
++++ b/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
+@@ -2317,11 +2317,11 @@ public sealed class SchLibReader
+         if (string.IsNullOrEmpty(value))
+             return false;
+ 
+-        // Schematic uses 10 units per mil (different from PCB's 10000)
++        // SchLib vertex values use DXP coordinates (10 mil per unit), matching
++        // LOCATIONX/LOCATIONY. Convert them with the same 100,000 raw-unit scale.
+         if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue))
+         {
+-            // Convert from schematic units to internal units
+-            result = Coord.FromRaw(intValue * 1000); // Scale up
++            result = CoordFromDxp(intValue);
+             return true;
+         }
+ 

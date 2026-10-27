@@ -1,0 +1,3 @@
+[submodule "altium-extension/Fluidra.DxpBridge"]
+	path = altium-extension/Fluidra.DxpBridge
+	url = https://github.com/BenoitGaltier/Altium_Bridge.git

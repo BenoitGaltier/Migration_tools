@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projects_migration · Altium 365</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block"><span class="product-mark" aria-hidden="true">A365</span><div><h1>Projects_migration</h1><p id="workspaceRoute">Migration de projets Altium 365</p></div></div>
+    <div class="header-controls"><a class="app-link" href="/">Bibliothèques</a><label class="compact-field">Langue<select id="languageSelect"><option value="fr">FR</option><option value="es">ES</option><option value="en">EN</option></select></label><button id="openSettings" class="secondary-command" data-project-i18n="configuration">Configuration</button></div>
+  </header>
+  <main class="projects-main">
+    <section class="connection-bar">
+      <label class="source-picker"><span data-project-i18n="sourceWorkspace">Workspace source</span><select id="sourceWorkspaceSelect"></select></label>
+      <div id="routeSummary" class="route-summary"></div>
+      <button id="refreshProjects" data-project-i18n="refresh">Actualiser</button>
+    </section>
+
+    <section class="migration-notice" role="note">
+      <strong data-project-i18n="integrityTitle">Migration à intégrité stricte</strong>
+      <span data-project-i18n="integrityText">L'historique Git est conservé. Les releases existantes restent dans le workspace source.</span>
+    </section>
+
+    <section class="activity-log-panel projects-log-panel" aria-labelledby="projectLogTitle">
+      <div class="activity-log-head"><h2 id="projectLogTitle" data-project-i18n="activityLog">Journal d'activité</h2><span data-project-i18n="logFormat">[Date + Heure] | Type | Éléments | Données</span></div>
+      <div id="output" class="result-log" role="log" aria-live="polite"></div>
+    </section>
+
+    <section class="projects-layout">
+      <aside class="projects-list-pane">
+        <div class="projects-pane-head"><h2 data-project-i18n="sourceProjects">Projets source</h2><span id="projectCount"></span></div>
+        <input id="projectFilter" type="search" data-project-i18n-placeholder="filter" placeholder="Filtrer les projets">
+        <div id="projectsList" class="projects-list" aria-live="polite"></div>
+      </aside>
+
+      <section class="project-detail-pane">
+        <div class="project-selection-head"><div><h2 id="selectedProjectName" data-project-i18n="selectProject">Sélectionnez un projet</h2><p id="selectedProjectMeta"></p></div></div>
+        <label class="destination-field project-destination"><span data-project-i18n="targetFolder">Répertoire du workspace de destination</span><select id="targetFolder"><option value="" data-project-i18n="loadingFolders">Chargement...</option></select></label>
+        <div class="project-actions"><span id="analysisStatus" class="analysis-status"></span><button id="migrateProject" disabled data-project-i18n="migrate">Migrer le projet</button></div>
+        <section id="preflightReport" class="preflight-report" hidden></section>
+      </section>
+
+      <aside class="target-projects-pane">
+        <div class="projects-pane-head"><div><h2 data-project-i18n="targetProjects">Projets déjà présents</h2><small id="targetFolderPath" data-project-i18n="chooseFolderHint">Choisissez un répertoire cible</small></div><span id="targetProjectCount">0</span></div>
+        <input id="targetProjectFilter" type="search" data-project-i18n-placeholder="targetFilter" placeholder="Filtrer les projets de destination">
+        <div id="targetProjectsList" class="projects-list target-projects-list" aria-live="polite"><p class="empty-project-list" data-project-i18n="chooseFolderHint">Choisissez un répertoire cible</p></div>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form id="settingsForm" method="dialog">
+      <div class="settings-head"><div><h2 data-project-i18n="configuration">Configuration</h2><p data-project-i18n="settingsHelp">Les tokens existants restent inchangés quand le champ est vide.</p></div><button id="closeSettings" type="button" class="icon-command" aria-label="Fermer" title="Fermer">X</button></div>
+      <section class="settings-section"><div class="settings-section-head"><div><h3 data-project-i18n="sourceWorkspaces">Workspaces sources</h3><p data-project-i18n="sourceWorkspacesHelp">Ajoutez toutes les bibliothèques depuis lesquelles vous migrez.</p></div><button id="addSourceWorkspace" type="button" data-project-i18n="addSource">Ajouter une source</button></div><div id="sourceWorkspaceEditors" class="workspace-editors"></div></section>
+      <section class="settings-section"><h3 data-project-i18n="targetWorkspace">Workspace cible</h3><div id="targetWorkspaceEditor" class="workspace-editor"></div></section>
+      <details class="settings-section advanced-settings"><summary data-project-i18n="localSettings">Paramètres locaux</summary><div class="settings-grid">
+        <label><span data-project-i18n="cacheHours">Cache (heures)</span><input id="settingsCacheTtl" type="number" min="1"></label>
+        <label class="wide-field"><span data-project-i18n="bridgeUrl">URL du bridge Designer</span><input id="settingsBridgeUrl" type="url"></label>
+        <label class="wide-field"><span data-project-i18n="bridgeToken">Token du bridge Designer</span><input id="settingsBridgeToken" type="password" autocomplete="new-password" data-project-i18n-placeholder="keepToken" placeholder="Vide = conserver"></label>
+        <label class="check-field"><input id="settingsSystemCa" type="checkbox"><span data-project-i18n="useSystemCa">Utiliser les certificats Windows</span></label>
+      </div></details>
+      <div id="settingsError" class="settings-error" role="alert"></div>
+      <div class="settings-actions"><button id="cancelSettings" type="button" data-project-i18n="cancel">Annuler</button><button id="saveSettings" type="submit" class="primary-command" data-project-i18n="saveRestart">Enregistrer et recharger</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="/projects-migration.js"></script>
+</body>
+</html>

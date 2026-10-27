@@ -1,0 +1,9 @@
+{
+  "name": "fluidra-altium-migration-assistant",
+  "private": true,
+  "version": "2026.10.2",
+  "description": "Assistant multilingue de migration entre workspaces Altium 365",
+  "dependencies": {
+    "three": "0.186.1"
+  }
+}

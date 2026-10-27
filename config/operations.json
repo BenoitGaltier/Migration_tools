@@ -1,0 +1,117 @@
+{
+  "notes": [
+    "All library reads start at Query.desLibrary and use the Des* schema exposed by Altium 365.",
+    "Symbols and footprints are read from their complete DesLibrary collections. Component associations are retained through DesComponentDetails.",
+    "Keep migration order: symbols, footprints, components. Components must reference target models and templates only."
+  ],
+  "queries": {
+    "symbols": {
+      "operationName": "ListDesSymbols",
+      "query": "query ListDesSymbols($first: Int!, $after: String) { desLibrary { symbols(first: $first, after: $after, where: { name: { startsWith: \"SYM-\" } }) { pageInfo { hasNextPage endCursor } nodes { id guid name description comment itemInternalId revisionInternalId imageThumbnailUrl createdAt releasedAt folder { id folderId name path } lifeCycleState { lifeCycleStateId name } } } } }",
+      "connectionPath": ["desLibrary", "symbols"]
+    },
+    "footprints": {
+      "operationName": "ListDesFootprints",
+      "query": "query ListDesFootprints($first: Int!, $after: String) { desLibrary { footprints(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id guid name description comment itemInternalId revisionInternalId imageThumbnailUrl createdAt releasedAt folder { id folderId name path } lifeCycleState { lifeCycleStateId name } } } } }",
+      "connectionPath": ["desLibrary", "footprints"]
+    },
+    "components": {
+      "operationName": "ListDesComponents",
+      "query": "query ListDesComponents($first: Int!, $after: String) { desLibrary(args: { allComponentRevisions: true }) { components(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id revisionId name description comment isManaged createdAt modifiedAt folder { id folderId name path } revision { revisionId details { revisionId releaseDate modifiedAt lifeCycleState { lifeCycleStateId name } } } componentType { componentTypeId name path } componentTemplate { id name description comment createdAt downloadableFile { fileName relativePath downloadUrl } } } } } }",
+      "connectionPath": ["desLibrary", "components"]
+    },
+    "componentDetails": {
+      "operationName": "GetDesComponentDetails",
+      "query": "query GetDesComponentDetails($id: ID!) { desComponentById(id: $id) { id revisionId name description comment manufacturerParts { companyName partNumber priority octopartId } folder { id folderId name path } revision { revisionId details { revisionId releaseDate modifiedAt lifeCycleState { lifeCycleStateId name } } } details { parameters { name value realValue type } itemParameters { name value realValue type } symbols { id guid name description comment itemInternalId revisionInternalId dataDownloadUrl folder { id folderId name path } } footprints { id guid name description comment itemInternalId revisionInternalId dataDownloadUrl folder { id folderId name path } } } } }",
+      "resultPath": ["desComponentById"]
+    },
+    "symbolDetails": {
+      "operationName": "GetDesSymbolDetails",
+      "query": "query GetDesSymbolDetails($id: ID!) { desSymbolById(id: $id) { id guid name description comment itemInternalId revisionInternalId imageThumbnailUrl dataDownloadUrl folder { id folderId name path } lifeCycleState { lifeCycleStateId name } } }",
+      "resultPath": ["desSymbolById"]
+    },
+    "footprintDetails": {
+      "operationName": "GetDesFootprintDetails",
+      "query": "query GetDesFootprintDetails($id: ID!) { desFootprintById(id: $id) { id guid name description comment itemInternalId revisionInternalId imageThumbnailUrl dataDownloadUrl folder { id folderId name path } lifeCycleState { lifeCycleStateId name } } }",
+      "resultPath": ["desFootprintById"]
+    },
+    "findTargetSymbol": {
+      "operationName": "FindTargetDesSymbol",
+      "query": "query FindTargetDesSymbol($name: String!) { desLibrary { symbols(first: 50, where: { name: { startsWith: $name } }) { nodes { id name comment description itemInternalId revisionInternalId releasedAt lifeCycleState { name } folder { id folderId name path } } } } }",
+      "resultPath": ["desLibrary", "symbols", "nodes"]
+    },
+    "findTargetFootprint": {
+      "operationName": "FindTargetDesFootprint",
+      "query": "query FindTargetDesFootprint($name: String!) { desLibrary { footprints(first: 50, where: { name: { startsWith: $name } }) { nodes { id name comment description itemInternalId revisionInternalId releasedAt lifeCycleState { name } folder { id folderId name path } } } } }",
+      "resultPath": ["desLibrary", "footprints", "nodes"]
+    },
+    "folders": {
+      "operationName": "ListDesFolders",
+      "query": "query ListDesFolders { desLibrary { folders { id folderId name path folderType itemNamingSchemeTemplate parent { id folderId name path itemNamingSchemeTemplate parent { id folderId name path itemNamingSchemeTemplate parent { id folderId name path itemNamingSchemeTemplate } } } } } }",
+      "resultPath": ["desLibrary", "folders"]
+    },
+    "projects": {
+      "operationName": "ListProjectsForMigration",
+      "query": "query ListProjectsForMigration($first: Int!, $after: String) { desProjects(first: $first, after: $after, order: [{ updatedAt: DESC }]) { pageInfo { hasNextPage endCursor } nodes { id projectId name description projectType repositoryType repositoryUrl url createdAt updatedAt latestRevision { revisionId author createdAt message } revisions(first: 1) { totalCount } design { releases(first: 1) { totalCount } } } } }",
+      "connectionPath": ["desProjects"]
+    },
+    "projectDetails": {
+      "operationName": "GetProjectMigrationDetails",
+      "query": "query GetProjectMigrationDetails($id: ID!) { desProjectById(id: $id) { id projectId name description projectType repositoryType repositoryUrl url createdAt updatedAt latestRevision { revisionId author createdAt message } revisions(first: 1) { totalCount } design { releases(first: 1) { totalCount } } } }",
+      "resultPath": ["desProjectById"]
+    },
+    "componentTemplates": {
+      "operationName": "ListDesComponentTemplates",
+      "query": "query ListDesComponentTemplates($first: Int!, $after: String) { desLibrary { componentTemplates(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id name description folder { id folderId name path } latestRevision { id name description comment createdAt downloadableFile { fileName relativePath downloadUrl } } } } } }",
+      "connectionPath": ["desLibrary", "componentTemplates"]
+    },
+    "componentParameterValues": {
+      "operationName": "ListTargetComponentParameterValues",
+      "query": "query ListTargetComponentParameterValues($first: Int!, $after: String) { desLibrary { components(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id name componentTemplate { id name } details { parameters { name value realValue type } } } } } }",
+      "connectionPath": ["desLibrary", "components"]
+    },
+    "targetComponentModels": {
+      "operationName": "ListTargetComponentModels",
+      "query": "query ListTargetComponentModels($first: Int!, $after: String) { desLibrary { components(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id name details { symbols { id name description comment revisionInternalId folder { id folderId name path } } footprints { id name description comment revisionInternalId folder { id folderId name path } } } } } } }",
+      "connectionPath": ["desLibrary", "components"]
+    },
+    "findTargetComponent": {
+      "operationName": "FindTargetDesComponent",
+      "query": "query FindTargetDesComponent($name: String!) { desLibrary(args: { allComponentRevisions: true }) { components(first: 50, where: { name: { eq: $name } }) { nodes { id revisionId name modifiedAt folder { id folderId name path } revision { details { releaseDate modifiedAt lifeCycleState { name } } } } } } }",
+      "resultPath": ["desLibrary", "components", "nodes"]
+    },
+    "findTargetComponentsByPrefix": {
+      "operationName": "FindTargetDesComponentsByPrefix",
+      "query": "query FindTargetDesComponentsByPrefix($first: Int!, $after: String) { desLibrary(args: { allComponentRevisions: true }) { components(first: $first, after: $after) { pageInfo { hasNextPage endCursor } nodes { id revisionId name createdAt modifiedAt comment folder { id folderId name path } revision { details { releaseDate modifiedAt lifeCycleState { name } } } } } } }",
+      "connectionPath": ["desLibrary", "components"]
+    },
+    "findTargetComponentsByComment": {
+      "operationName": "FindTargetDesComponentsByComment",
+      "query": "query FindTargetDesComponentsByComment($comment: String!) { desLibrary(args: { allComponentRevisions: true }) { components(first: 50, where: { comment: { eq: $comment } }) { nodes { id revisionId name createdAt modifiedAt comment folder { id folderId name path } revision { details { releaseDate modifiedAt lifeCycleState { name } } } } } } }",
+      "resultPath": ["desLibrary", "components", "nodes"]
+    }
+  },
+  "mutations": {
+    "createSymbol": {
+      "operationName": "CreateDesSymbol",
+      "query": "mutation CreateDesSymbol($input: DesCreateSymbolInput!) { desCreateSymbol(input: $input) { id errors { message } } }"
+    },
+    "createFootprint": {
+      "operationName": "CreateDesFootprint",
+      "query": "mutation CreateDesFootprint($input: DesCreateFootprintInput!) { desCreateFootprint(input: $input) { footprintId errors { message } } }"
+    },
+    "createComponent": {
+      "operationName": "ReleaseDesComponent",
+      "query": "mutation ReleaseDesComponent($input: DesReleaseComponentInput!) { desReleaseComponent(input: $input) { errors { message } } }"
+    },
+    "addComponentPartChoices": {
+      "operationName": "AddDesComponentPartChoices",
+      "query": "mutation AddDesComponentPartChoices($input: DesAddComponentPartChoicesInput!) { desAddComponentPartChoices(input: $input) { componentId errors { message } } }"
+    }
+  },
+  "mapping": {
+    "componentTemplateStrategy": "matchTargetTemplateCategoryFromDestinationFolder",
+    "parameterPolicy": "mapDesComponentDetailsToTargetCmptDefinitions",
+    "rejectSourceWorkspaceReferences": true
+  }
+}

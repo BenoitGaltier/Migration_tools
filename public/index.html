@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Migration Altium 365</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block"><span class="product-mark" aria-hidden="true">A365</span><div><h1>Migration Altium 365</h1><p id="workspaceRoute">Source vers cible</p></div></div>
+    <div class="header-controls">
+      <a class="app-link" href="/projects-migration.html">Projects_migration</a>
+      <label class="compact-field" for="languageSelect"><span data-i18n="language">Langue</span><select id="languageSelect" aria-label="Langue"><option value="fr">FR</option><option value="es">ES</option><option value="en">EN</option></select></label>
+      <button id="openSettings" class="secondary-command" data-i18n="configuration">Configuration</button>
+      <label class="toggle"><input id="dryRun" type="checkbox" checked><span>Dry-run</span></label>
+    </div>
+  </header>
+
+  <main>
+    <section class="connection-bar" aria-label="Connexions">
+      <label class="source-picker" for="sourceWorkspaceSelect"><span data-i18n="activeSource">Workspace source actif</span><select id="sourceWorkspaceSelect"></select></label>
+      <div class="connection-statuses">
+        <div class="workspace-test"><span id="sourceStatus" class="status" data-i18n="checkingSource">Source : verification...</span><button data-action="test" data-workspace="source" data-i18n="test">Tester</button></div>
+        <div class="workspace-test"><span id="targetStatus" class="status" data-i18n="checkingTarget">Cible : verification...</span><button data-action="test" data-workspace="target" data-i18n="test">Tester</button></div>
+        <div class="workspace-test"><span id="designerStatus" class="status" data-i18n="checkingBridge">Bridge Designer : verification...</span><button id="testDesignerBridge" data-i18n="testBridge">Tester le bridge</button></div>
+      </div>
+      <button id="restartApp" class="restart-button" data-i18n-title="restartHint" title="Relire le fichier .env et recharger l'interface"><span data-i18n="restart">Relancer l'app</span></button>
+    </section>
+
+    <section class="activity-log-panel" aria-labelledby="activityLogTitle">
+      <div class="activity-log-head">
+        <h2 id="activityLogTitle" data-i18n="activityLog">Journal d'activite</h2>
+        <span data-i18n="logFormat">[Date + Heure] | Type | Elements | Data</span>
+      </div>
+      <div id="output" class="result-log" role="log" aria-live="polite"></div>
+    </section>
+
+    <nav class="steps" aria-label="Migration">
+      <button class="step active" data-kind="symbols" data-i18n="stepSymbols">1. Symboles</button>
+      <button class="step" data-kind="footprints" data-i18n="stepFootprints">2. Empreintes</button>
+      <button class="step" data-kind="components" data-i18n="stepComponents">3. Composants</button>
+    </nav>
+
+    <section class="content">
+      <aside class="list-pane pending-pane">
+        <h2 data-i18n="toMigrate">A migrer</h2>
+        <div class="side-actions"><button id="load" data-i18n="loadSource">Charger la source</button><button id="refreshList" data-i18n="refresh" data-i18n-title="refreshHint">Actualiser</button><button id="selectAll" data-i18n="selectAll">Tout selectionner</button><button id="clearSelection" data-i18n="clear">Vider</button></div>
+        <label class="destination-field" for="targetFolder"><span id="targetFolderLabel" data-i18n="targetFolder">Repertoire cible</span><select id="targetFolder" disabled><option value="" data-i18n="loadingFolders">Chargement des repertoires...</option></select></label>
+        <input id="filter" data-i18n-placeholder="filterPlaceholder" placeholder="Filtrer par nom, description, dossier">
+        <div id="count" class="list-count"></div><div id="list" class="list"></div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-head"><h2 id="title">Symboles</h2><div class="panel-actions"><button id="configureMapping" hidden data-i18n="mapParameters">Mapper les parametres</button><button id="migrate" data-i18n="migrateSelection">Migrer la selection</button></div></div>
+        <section id="mappingPanel" class="mapping-panel" hidden>
+          <div class="mapping-head"><div><h3 data-i18n="parameterMapping">Mapping des parametres</h3><span id="mappingTemplate"></span></div><div class="mapping-actions"><button id="refreshDictionaries" data-i18n="refreshDictionaries">Actualiser les dictionnaires</button><button id="saveMapping" data-i18n="saveMapping">Enregistrer le mapping</button></div></div>
+          <div class="model-associations">
+            <label><span data-i18n="targetSymbol">Symbole cible</span><select id="componentSymbol"><option value="" data-i18n="chooseSymbol">Choisir un symbole</option></select><small id="sourceSymbol"></small></label>
+            <label><span data-i18n="targetFootprints">Empreintes cibles</span><span id="componentFootprints" class="model-checklist"></span><small id="sourceFootprints"></small></label>
+          </div>
+          <div class="mapping-table-wrap"><table class="mapping-table"><thead><tr><th data-i18n="targetParameter">Parametre cible</th><th data-i18n="type">Type</th><th data-i18n="sourceParameter">Parametre source</th><th data-i18n="migratedValue">Valeur migree</th></tr></thead><tbody id="mappingRows"></tbody></table></div>
+        </section>
+        <section id="modelPreview" class="model-preview" hidden><div class="model-preview-head"><div><strong id="modelPreviewName"></strong><span id="modelPreviewRevision"></span></div></div><div id="modelPreviewContent" class="model-preview-content"></div></section>
+        <section id="semiAutoPanel" class="semi-auto-panel" hidden>
+          <div class="semi-auto-head"><div><h3 data-i18n="semiAutoTitle">Migration semi-automatique par categorie</h3><span data-i18n="semiAutoHelp">Prepare un lot, puis valide les modeles et parametres de chaque composant.</span></div><button id="prepareSemiAuto" data-i18n="prepareBatch">Preparer le lot</button></div>
+          <div class="semi-auto-controls">
+            <label><span data-i18n="sourceCategory">Categorie source</span><select id="sourceCategory"><option value="" data-i18n="chooseCategory">Choisir une categorie</option></select></label>
+            <label><span data-i18n="targetCategory">Categorie cible</span><select id="targetCategory"><option value="" data-i18n="chooseCategory">Choisir une categorie</option></select></label>
+            <label><span data-i18n="batchSize">Taille du lot</span><select id="batchSize"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all" data-i18n="all">Tous</option></select></label>
+          </div><div id="semiAutoResults" class="semi-auto-results"></div>
+        </section>
+      </section>
+
+      <aside class="list-pane migrated-pane"><h2 data-i18n="alreadyMigrated">Deja migres</h2><div id="migratedCount" class="list-count"></div><div id="migratedList" class="list"></div></aside>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form id="settingsForm" method="dialog">
+      <div class="settings-head"><div><h2 data-i18n="configuration">Configuration</h2><p data-i18n="settingsHelp">Les tokens existants restent inchanges quand le champ est vide.</p></div><button id="closeSettings" type="button" class="icon-command" aria-label="Fermer" title="Fermer">X</button></div>
+      <section class="settings-section"><div class="settings-section-head"><div><h3 data-i18n="sourceWorkspaces">Workspaces sources</h3><p data-i18n="sourceWorkspacesHelp">Ajoutez toutes les bibliotheques depuis lesquelles vous migrez.</p></div><button id="addSourceWorkspace" type="button" data-i18n="addSource">Ajouter une source</button></div><div id="sourceWorkspaceEditors" class="workspace-editors"></div></section>
+      <section class="settings-section"><h3 data-i18n="targetWorkspace">Workspace cible</h3><div id="targetWorkspaceEditor" class="workspace-editor"></div></section>
+      <details class="settings-section advanced-settings"><summary data-i18n="localSettings">Parametres locaux</summary><div class="settings-grid">
+        <label><span data-i18n="cacheHours">Cache (heures)</span><input id="settingsCacheTtl" type="number" min="1"></label>
+        <label class="wide-field"><span data-i18n="bridgeUrl">URL du bridge Designer</span><input id="settingsBridgeUrl" type="url"></label>
+        <label class="wide-field"><span data-i18n="bridgeToken">Token du bridge Designer</span><input id="settingsBridgeToken" type="password" autocomplete="new-password" data-i18n-placeholder="keepToken" placeholder="Vide = conserver"></label>
+        <label class="check-field"><input id="settingsSystemCa" type="checkbox"><span data-i18n="useSystemCa">Utiliser les certificats Windows</span></label>
+      </div></details>
+      <div id="settingsError" class="settings-error" role="alert"></div>
+      <div class="settings-actions"><button id="cancelSettings" type="button" data-i18n="cancel">Annuler</button><button id="saveSettings" type="submit" class="primary-command" data-i18n="saveRestart">Enregistrer et recharger</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

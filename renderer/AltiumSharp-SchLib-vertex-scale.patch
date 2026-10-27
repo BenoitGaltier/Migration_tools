@@ -1,0 +1,13 @@
+diff --git a/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs b/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
+--- a/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
++++ b/src/OriginalCircuit.Altium/Serialization/Readers/SchLibReader.cs
+@@
+-        // Schematic uses 10 units per mil (different from PCB's 10000)
++        // SchLib vertex values use DXP coordinates (10 mil per unit), matching
++        // LOCATIONX/LOCATIONY. Convert them with the same 100,000 raw-unit scale.
+         if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue))
+         {
+-            // Convert from schematic units to internal units
+-            result = Coord.FromRaw(intValue * 1000); // Scale up
++            result = CoordFromDxp(intValue);
+             return true;

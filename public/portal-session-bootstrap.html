@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Altium temporaire</title>
+</head>
+<body>
+  <main>
+    <h1>Session Altium temporaire</h1>
+    <form id="session-form">
+      <label for="session-payload">Session</label>
+      <textarea id="session-payload" autocomplete="off" spellcheck="false"></textarea>
+      <button type="submit">Charger en mémoire</button>
+    </form>
+    <p id="status" role="status"></p>
+  </main>
+  <script>
+    const form = document.querySelector("#session-form");
+    const field = document.querySelector("#session-payload");
+    const status = document.querySelector("#status");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      status.textContent = "Validation…";
+      try {
+        const payload = JSON.parse(field.value);
+        field.value = "";
+        const response = await fetch("/api/projects-migration/portal-session", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        status.textContent = `Session chargée en mémoire jusqu’au ${new Date(result.expiresAt).toLocaleString()}.`;
+      } catch (error) {
+        field.value = "";
+        status.textContent = `Erreur : ${error.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
