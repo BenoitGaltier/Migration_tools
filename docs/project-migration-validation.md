@@ -66,8 +66,30 @@ Projet : **IMU_TEST** de ZPCE vers Global Fluidra,
 
 Controle initial : 64 commits, 42 fichiers, 18 documents schema/PCB lies,
 aucune release. Commit source : `ec7798e6ae52455cf4d61dda923fd90b1698e64e`.
-La source reste en lecture seule. Resultat de publication a completer apres
-verification native, Git et ouverture web.
+La migration native et les controles API ont reussi. Projet cible :
+`6C924EB2-E0EF-4945-867D-B2F7E5E79FB5`, dans son propre dossier PROJECT sous le
+catalogue White Space choisi. Le rattachement natif et la presence dans le
+catalogue Altium 365 sont verifies.
+
+Les 64 commits source sont ancetres du HEAD cible ; le depot cible en contient
+68, dont quatre commits de detachement/rattachement natif. Aucun commit source
+ne manque. Les 41 fichiers d'origine hors `.PrjPcb` ont les memes objets Git et
+modes ; le fichier projet est lie au GUID cible. Le HEAD distant source reste
+`ec7798e6ae52455cf4d61dda923fd90b1698e64e`.
+
+HEAD cible controle : `95e120f5ed273f4ee061b1a6fc7ed067e8b2e454`.
+La generation cloud est verifiee a ce commit : statut 1, source Metadata courante,
+18 documents disponibles, aucun document lie absent. L'API retourne `migrated`.
+Le schema, le PCB et la 3D s'ouvrent et rendent le design dans Altium 365. La page
+avait ete ouverte pendant la generation ; elle a ete rechargee apres l'annonce
+de la nouvelle visualisation. L'app reconnait ensuite le transfert termine et
+affiche sept projets dans White Space, dont une seule entree IMU_TEST.
+
+Une verification supplementaire par `POST /api/projects-migration/validate`
+retourne aussi `migrated`, mode `cloud-validation`, sur le meme GUID et le meme
+HEAD, sans commande de publication. Aucun archivage de releases n'a ete cree.
+
+[Ouvrir IMU_TEST dans Global Fluidra](https://zodiac-pool-systems-llc.365.altium.com/designs/6C924EB2-E0EF-4945-867D-B2F7E5E79FB5).
 
 ## Perimetre et limites
 
