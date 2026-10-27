@@ -1023,7 +1023,7 @@ async function projectRepositorySnapshot(workspace, project) {
 
 async function targetProjectRepository(projectId, { allowExternal = false, includeCounts = false } = {}) {
   const query = `query TargetMigratedProject($id: ID!) {
-    desProjectById(id: $id) { id projectId name projectType repositoryType repositoryUrl url latestRevision { revisionId } design { releases(first: 1) { totalCount } } }
+    desProjectById(id: $id) { id projectId name projectType repositoryType repositoryUrl url design { releases(first: 1) { totalCount } } }
   }`;
   let lastError = null;
   for (let attempt = 0; attempt < 12; attempt += 1) {

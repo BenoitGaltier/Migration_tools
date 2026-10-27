@@ -92,6 +92,11 @@ globalThis.fetch = async (input, options = {}) => {
   if (options.method === "POST") {
     const { query, variables, operationName } = JSON.parse(options.body);
     assert.match(query, /^\s*query\b/, "Project migration must not upload a snapshot or modify source releases");
+    // Nexar cannot resolve Git revisions while Designer's temporary origin is
+    // a local file URL. Identity/type must be read before VCS conversion.
+    if (!isSource && variables?.id === state.target?.id && state.target?.repositoryType === "EXTERNAL" && /\blatestRevision\b/.test(query)) {
+      return Response.json({errors:[{message:"Cannot get VCS revision for project: unsupported URL protocol"}]});
+    }
     let data;
     if (/desLibrary/.test(query)) data = { desLibrary: { folders: allFolders() } };
     else if (/FindTargetProject/.test(operationName || query)) data = { desProjects: { nodes: lostResponse ? [] : state.target ? [await targetProject()] : [] } };

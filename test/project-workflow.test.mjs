@@ -14,7 +14,7 @@ async function scenario(t, name) {
   const data = JSON.parse(result.stdout.trim()); assert.equal(data.sourceUnchanged, true); return data;
 }
 describe("isolated HTTP/Git project workflow", { concurrency: 3 }, () => {
-for (const name of ["root", "nested", "log-unavailable", "concurrent", "harness", "harness-nested", "harness-wiring-only", "system", "system-nested", "system-verified-child", "system-nested-verified-child"]) test(`HTTP project migration preserves real Git history, Unicode CAD files and target identity: ${name}`, async (t) => {
+for (const name of ["root", "nested", "log-unavailable", "concurrent", "harness", "harness-local-repository", "harness-nested", "harness-wiring-only", "system", "system-nested", "system-verified-child", "system-nested-verified-child"]) test(`HTTP project migration preserves real Git history, Unicode CAD files and target identity: ${name}`, async (t) => {
   const result = await scenario(t, name);
   assert.equal(result.preflight.body.executable, true);
   assert.equal(result.first.status, 200, result.first.body.error);

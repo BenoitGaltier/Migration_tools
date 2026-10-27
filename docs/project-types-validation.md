@@ -5,7 +5,7 @@ Les ports de production restent 4173 et 4174.
 
 ## Automatisation
 
-Les 97 tests applicatifs passent sous Windows. Ils incluent les tests existants
+Les 98 tests applicatifs passent sous Windows. Ils incluent les tests existants
 de composants, symboles et empreintes, ainsi que des essais HTTP utilisant les
 routes de production et de vrais depots Git temporaires. Aucun de ces essais
 n'appelle un workspace Altium reel.
@@ -18,6 +18,12 @@ transfert. Les essais multiboard verifient les correspondances par GUID, le
 changement de nom d'un enfant cible, les liens des modules, la preservation des
 connexions, pages et fichiers d'assemblage, et l'absence d'ecriture dans les
 depots enfants. Les archives corrompues et les references ambigues sont refusees.
+
+L'essai connecte a aussi reproduit le refus Nexar `unsupported URL protocol`
+si une requete demande la derniere revision Git du depot local EXTERNAL avant
+la conversion native. Le test HTTP reproduit ce refus pour toute lecture
+prematuree de revision. L'app lit uniquement l'identite, le type et le depot a
+cette etape ; les revisions et donnees cloud sont verifiees apres conversion.
 
 Les 19 controles natifs de chemins et 15 controles de dossiers passent. La
 compilation Release avec le SDK installe reussit. Les doubles du SDK et le faux
@@ -42,6 +48,10 @@ Cette observation motive la verification cloud specifique aux nouveaux types ;
 elle ne remplace pas le controle visuel du harnais pilote apres publication.
 
 ## Essai reel et deploiement
+
+La validation en lecture seule du PCB de reference deja migre retourne encore
+`migrated` avec historique et generation cloud verifies au meme commit cible,
+en utilisant le serveur de cette branche. Elle ne relance aucune publication.
 
 Le harnais pilote est autorise vers le catalogue White Space. Sa publication,
 son historique, ses fichiers, son dossier natif et son rendu cloud restent a
