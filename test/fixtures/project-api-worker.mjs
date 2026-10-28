@@ -155,6 +155,7 @@ const bridge = createServer(async (req, res) => {
       await git(["-C", state.workingCopy, "remote", "set-url", "origin", pathToFileURL(targetRepo).href]);
       state.target.repositoryType = "INTERNAL"; state.target.repositoryUrl = pathToFileURL(targetRepo).href;
       await writeFile(evidence, "started\nprojectFullPath=" + state.fullPath + "\nprojectGuid=" + state.target.projectId + "\nreturned\n");
+      if (scenario === "harness-lost-native-response") return req.socket.destroy();
       return send({ ok: true });
     }
     throw new Error("Unexpected native fixture command");
@@ -182,6 +183,7 @@ try {
       second = await call("migrate"); state.released = true; first = await pending;
     } else first = await call("migrate");
     if (lostResponse) second = await call("migrate");
+    if (scenario === "harness-lost-native-response") second = await call("migrate");
     if (scenario.endsWith("cloud-pending")) { state.pending = false; state.bridgeStopped = true; second = await call("validate"); }
   }
   const currentSourceHead = await git([`--git-dir=${sourceRepo}`, "rev-parse", "HEAD"]);

@@ -138,6 +138,12 @@ Les requetes natives restent ouvertes au-dela de la limite de cinq minutes des
 en-tetes de fetch ; une interruption conserve un etat en attente et n'envoie aucune
 seconde commande automatiquement.
 
+Le bridge 1.1.39 traite aussi la fermeture du client HTTP apres une longue
+confirmation native, sans tenter d'envoyer une seconde reponse sur la connexion
+fermee. Si l'attente de l'app expire mais que Designer termine ensuite, actualiser
+l'analyse permet de verifier le transfert journalise et de reprendre le meme GUID.
+Une conversion deja terminee vers INTERNAL n'est pas relancee.
+
 Chaque transfert est journalise dans `migration_state/project-transfers/` avant
 publication. Une cible inachevee creee par l'app est reconnue par son identifiant,
 le rattachement local, le dossier cible et le depot source ; l'app reprend cette

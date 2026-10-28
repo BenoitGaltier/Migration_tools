@@ -57,6 +57,18 @@ test("a same-named catalog collision is detected before any project publication"
   assert.match(result.preflight.body.blockers.join(" "), /catalog|folder/i);
   assert.equal(result.publishCalls, 0);
 });
+
+test("a lost native VCS response resumes verification of the INTERNAL target without repeating either native command", async (t) => {
+  const result = await scenario(t, "harness-lost-native-response");
+  assert.notEqual(result.first.status, 200);
+  assert.equal(result.second.status, 200, result.second.body.error);
+  assert.equal(result.second.body.status, "migrated");
+  assert.equal(result.publishCalls, 1);
+  assert.equal(result.nativeCalls, 1);
+  assert.equal(result.integrity.sourceHistoryPreserved, true);
+  assert.equal(result.integrity.cadBlobsPreserved, true);
+  assert.deepEqual(result.phases, ["completed"]);
+});
 for (const name of ["missing-document", "harness-missing-document"]) test(`a missing linked CAD document is rejected before publication: ${name}`, async (t) => {
   const result = await scenario(t, name);
   assert.equal(result.publishCalls, 0);
