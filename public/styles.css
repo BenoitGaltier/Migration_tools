@@ -1159,3 +1159,7 @@ aside {
 .project-dependencies { margin-top: 16px; }
 .project-dependencies .dependency-row { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid var(--border, #d5dfeb); }
 .project-dependencies .dependency-row small { overflow-wrap: anywhere; color: var(--muted, #60728b); }
+.managed-boms .bom-actions { justify-content: flex-start; flex-wrap: wrap; }
+.managed-boms details { max-width: 100%; overflow: auto; }
+.managed-boms .bom-comparison { width: 100%; table-layout: fixed; margin: 10px 0; font-size: 12px; }
+.managed-boms .bom-comparison th, .managed-boms .bom-comparison td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; padding: 8px; }

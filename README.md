@@ -83,6 +83,12 @@ correspondant au composant reste applique, mais toutes ses revisions sont propos
 
 ## Migration de projets
 
+La page propose aussi les Managed BOM de BOM Portal associees au projet choisi.
+Apres verification de la migration du projet, **Reprendre cette BOM** cree une BOM
+liee au projet cible et reprend les donnees prises en charge. Les ecarts restent
+visibles et les anciennes revisions/releases restent dans le workspace source.
+Voir [le perimetre, les controles et les limites BOM](docs/managed-bom-migration.md).
+
 La page [http://localhost:4173/projects-migration.html](http://localhost:4173/projects-migration.html)
 liste tous les projets du workspace source actif avec leur nombre de commits et de
 releases. Elle permet de choisir un repertoire `PROJECT_CATALOG` du workspace cible et

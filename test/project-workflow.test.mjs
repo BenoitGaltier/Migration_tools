@@ -14,6 +14,19 @@ async function scenario(t, name) {
   const data = JSON.parse(result.stdout.trim()); assert.equal(data.sourceUnchanged, true); return data;
 }
 describe("isolated HTTP/Git project workflow", { concurrency: 3 }, () => {
+test("Managed BOM HTTP transfer requires the verified parent and preserves design history, source data and the same BOM on repeated validation", async (t) => {
+  const result = await scenario(t, "managed-boms");
+  assert.equal(result.first.body.status, "awaiting-cloud");
+  for (const operation of ["copied", "verified", "repeated"]) {
+    assert.equal(result.boms[operation].status, 200, result.boms[operation].body.error);
+    assert.equal(result.boms[operation].body.status, "copied");
+    assert.equal(result.boms[operation].body.verification.binding, true);
+  }
+  assert.equal(result.boms.bomCreates, 1); assert.equal(result.boms.bomWrites, 1);
+  assert.equal(result.boms.listing.targetReady, true); assert.equal(result.boms.listing.rows[0].phase, "verified");
+  assert.equal(result.publishCalls, 1); assert.equal(result.nativeCalls, 1);
+  assert.deepEqual(result.phases, ["cloud-validation-pending"], "BOM qualification must not overwrite the existing project validation journal");
+});
 for (const name of ["root", "nested", "log-unavailable", "concurrent", "harness", "harness-local-repository", "harness-nested", "harness-wiring-only", "system", "system-nested", "system-verified-child", "system-nested-verified-child"]) test(`HTTP project migration preserves real Git history, Unicode CAD files and target identity: ${name}`, async (t) => {
   const result = await scenario(t, name);
   assert.equal(result.preflight.body.executable, true);
