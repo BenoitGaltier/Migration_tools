@@ -71,7 +71,40 @@ const messages = {
   }
 };
 
-const state = { config: null, rows: [], targetRows: [], selected: null, folderId: "", report: null, settings: null, migrating: false };
+Object.assign(messages.fr, {
+  managedBoms: "BOM Portal — Managed BOM", bomLoading: "Recherche des BOM associées…", bomNone: "Aucune Managed BOM associée à ce projet.",
+  bomScope: "Une nouvelle BOM est créée depuis le projet cible pour conserver son association. Les colonnes et réglages pris en charge sont repris et comparés. L’historique, les releases, les commentaires et les données non reprises restent accessibles dans la BOM source.",
+  bomParentPending: "Migrez et vérifiez d’abord le projet cible, puis actualisez cette liste.", bomCopy: "Reprendre cette BOM", bomVerify: "Vérifier la BOM cible", bomSource: "BOM source", bomTarget: "BOM cible",
+  bomRefresh: "Actualiser les BOM", bomUnsupported: "BOM issue d’une release, d’une révision figée ou de plusieurs sources : reprise automatique non prise en charge.",
+  bomNotStarted: "À reprendre", bomCopied: "Lien et données prises en charge vérifiés", bomReview: "Lien vérifié — données à contrôler", bomUnknown: "Résultat interrompu — inspection requise", bomPending: "Créée — vérification ou reprise requise", bomVariant: "Variante", bomRemaining: "Écarts à contrôler",
+  bomError: "Les BOM n’ont pas pu être analysées :", bomWorking: "Reprise de la BOM en cours…"
+});
+Object.assign(messages.fr, { bomCells: "cellules à reprendre", bomSettings: "Réglages à reprendre", bomRecheck: "Le projet cible et la variante seront revérifiés sur leur révision courante avant la reprise de la BOM." });
+Object.assign(messages.en, { bomCells: "cells to copy", bomSettings: "Settings to copy", bomRecheck: "The current target project revision and variant will be verified before copying the BOM." });
+Object.assign(messages.es, { bomCells: "celdas pendientes", bomSettings: "Ajustes pendientes", bomRecheck: "Se verificará la revisión actual del proyecto de destino y su variante antes de copiar la BOM." });
+Object.assign(messages.fr, { bomExtraRow: "Ligne supplémentaire dans la cible" });
+Object.assign(messages.en, { bomExtraRow: "Additional target row" });
+Object.assign(messages.es, { bomExtraRow: "Fila adicional en el destino" });
+Object.assign(messages.fr, { bomComparison: "Comparer les écarts", bomLine: "Ligne", bomField: "Champ", bomSourceValue: "Source", bomTargetValue: "Cible", bomMissingRow: "Ligne non reprise", bomPart: "Référence fabricant", bomCount: "Nombre de lignes", bomColumn: "Colonne", bomValue: "Valeur", bomDownload: "Télécharger le rapport et les données source", bomDesignDifference: "La BOM Portal source comporte des choix ou des lignes différents du design courant. Ces écarts demandent un contrôle ; la reprise n’est pas annoncée comme complète." });
+Object.assign(messages.en, { bomComparison: "Compare differences", bomLine: "Row", bomField: "Field", bomSourceValue: "Source", bomTargetValue: "Target", bomMissingRow: "Row not copied", bomPart: "Manufacturer part", bomCount: "Row count", bomColumn: "Column", bomValue: "Value", bomDownload: "Download report and source data", bomDesignDifference: "The source Portal BOM contains choices or rows that differ from the current design. Review is required; this transfer is not reported as complete." });
+Object.assign(messages.es, { bomComparison: "Comparar diferencias", bomLine: "Fila", bomField: "Campo", bomSourceValue: "Origen", bomTargetValue: "Destino", bomMissingRow: "Fila no copiada", bomPart: "Referencia del fabricante", bomCount: "Número de filas", bomColumn: "Columna", bomValue: "Valor", bomDownload: "Descargar informe y datos de origen", bomDesignDifference: "La BOM de origen contiene opciones o filas diferentes del diseño actual. Se requiere una revisión; la transferencia no se presenta como completa." });
+Object.assign(messages.en, {
+  managedBoms: "BOM Portal — Managed BOM", bomLoading: "Looking for associated BOMs…", bomNone: "No Managed BOM is associated with this project.",
+  bomScope: "A new BOM is created from the target project to retain its association. Supported columns and settings are copied and compared. History, releases, comments and data not copied remain available in the source BOM.",
+  bomParentPending: "Migrate and verify the target project first, then refresh this list.", bomCopy: "Copy this BOM", bomVerify: "Verify target BOM", bomSource: "Source BOM", bomTarget: "Target BOM",
+  bomRefresh: "Refresh BOMs", bomUnsupported: "This BOM uses a release, pinned revision or multiple sources: automatic transfer is not supported.",
+  bomNotStarted: "Not started", bomCopied: "Link and supported data verified", bomReview: "Link verified — review data", bomUnknown: "Interrupted outcome — inspection required", bomPending: "Created — verification or resumption required", bomVariant: "Variant", bomRemaining: "Differences to review",
+  bomError: "BOMs could not be analyzed:", bomWorking: "Copying BOM…"
+});
+Object.assign(messages.es, {
+  managedBoms: "BOM Portal — Managed BOM", bomLoading: "Buscando BOM asociadas…", bomNone: "No hay Managed BOM asociada con este proyecto.",
+  bomScope: "Se crea una BOM desde el proyecto de destino para conservar su asociación. Se copian y comparan las columnas y ajustes compatibles. El historial, las releases, los comentarios y los datos no copiados permanecen en la BOM de origen.",
+  bomParentPending: "Migre y verifique primero el proyecto de destino y actualice esta lista.", bomCopy: "Copiar esta BOM", bomVerify: "Verificar BOM de destino", bomSource: "BOM de origen", bomTarget: "BOM de destino",
+  bomRefresh: "Actualizar BOM", bomUnsupported: "Esta BOM utiliza una release, una revisión fija o varias fuentes: transferencia automática no compatible.",
+  bomNotStarted: "Pendiente", bomCopied: "Vínculo y datos compatibles verificados", bomReview: "Vínculo verificado — revisar datos", bomUnknown: "Resultado interrumpido — inspección necesaria", bomPending: "Creada — verificar o reanudar", bomVariant: "Variante", bomRemaining: "Diferencias a revisar",
+  bomError: "No se pudieron analizar las BOM:", bomWorking: "Copiando BOM…"
+});
+const state = { config: null, rows: [], targetRows: [], selected: null, folderId: "", report: null, settings: null, migrating: false, bomReport: null, bomBusy: false };
 let language = localStorage.getItem("altium-migration-language") || "fr";
 if (!messages[language]) language = "fr";
 const t = (key) => messages[language][key] || messages.fr[key] || key;
@@ -114,6 +147,7 @@ function translate() {
   renderTargetProjects();
   if (state.selected) $("#selectedProjectMeta").textContent = `${projectMeta(state.selected)} · ${state.selected.repositoryType}`;
   if (state.report) renderReport(state.report);
+  renderManagedBoms();
 }
 
 function renderProjects() {
@@ -188,12 +222,102 @@ function selectProject(project) {
   updateActions();
   renderProjects();
   analyzeSelectedProject();
+  loadManagedBoms();
 }
 
 function updateActions() {
   $("#migrateProject").disabled = state.migrating || !state.report?.executable;
   $("#migrateProject").textContent = state.report?.awaitingCloud ? t("verifyCloud") : state.report?.alreadyMigrated ? t("alreadyMigrated") : state.report?.resumeTransfer ? t("resumeProject") : t("migrate");
   for (const id of ["#targetFolder", "#sourceWorkspaceSelect", "#refreshProjects"]) $(id).disabled = state.migrating;
+}
+
+let bomSequence = 0;
+async function loadManagedBoms(refresh = false) {
+  const sequence = ++bomSequence;
+  state.bomReport = null;
+  const root = $("#managedBoms");
+  root.hidden = !state.selected;
+  if (!state.selected) return;
+  root.textContent = t("bomLoading");
+  try {
+    const query = new URLSearchParams({ projectId: state.selected.id, targetFolderId: state.folderId, refresh: String(refresh) });
+    const report = await api(`/api/projects-migration/boms?${query}`);
+    if (sequence !== bomSequence) return;
+    state.bomReport = report;
+  } catch (error) {
+    if (sequence !== bomSequence) return;
+    state.bomReport = { error: error.message };
+  }
+  renderManagedBoms();
+}
+
+function renderManagedBoms() {
+  const root = $("#managedBoms"); root.hidden = !state.selected;
+  if (!state.selected || !state.bomReport) return;
+  root.replaceChildren();
+  const head = document.createElement("div"); head.className = "projects-pane-head";
+  const title = document.createElement("h3"); title.textContent = t("managedBoms");
+  const refresh = document.createElement("button"); refresh.type = "button"; refresh.textContent = t("bomRefresh"); refresh.disabled = state.migrating;
+  refresh.addEventListener("click", () => loadManagedBoms(true)); head.append(title, refresh); root.append(head);
+  if (state.bomReport.error) { const error = document.createElement("p"); error.className = "report-warnings"; error.textContent = `${t("bomError")} ${state.bomReport.error}`; root.append(error); return; }
+  const rows = state.bomReport.rows || [];
+  if (!rows.length) { const empty = document.createElement("p"); empty.textContent = t("bomNone"); root.append(empty); return; }
+  const help = document.createElement("p"); help.className = "api-limitation"; help.textContent = t("bomScope"); root.append(help);
+  const recheck = document.createElement("p"); recheck.className = "api-limitation"; recheck.textContent = t("bomRecheck"); root.append(recheck);
+  if (!state.bomReport.targetReady) { const pending = document.createElement("p"); pending.textContent = t("bomParentPending"); root.append(pending); }
+  for (const bom of rows) {
+    const article = document.createElement("article"); article.className = "dependency-row";
+    const name = document.createElement("strong"); name.textContent = bom.name; article.append(name);
+    const status = document.createElement("span"); status.textContent = !bom.supported ? t("bomUnsupported") : t(({ verified: "bomCopied", "review-required": "bomReview", "outcome-unknown": "bomUnknown", "not-started": "bomNotStarted" })[bom.phase] || "bomPending"); article.append(status);
+    if (bom.variantName) { const variant = document.createElement("small"); variant.textContent = `${t("bomVariant")}: ${bom.variantName}`; article.append(variant); }
+    const actions = document.createElement("div"); actions.className = "project-actions bom-actions";
+    for (const [url, label] of [[bom.sourceUrl, "bomSource"], [bom.targetUrl, "bomTarget"]]) {
+      if (!url) continue;
+      const link = document.createElement("a"); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = t(label); actions.append(link);
+    }
+    const copy = document.createElement("button"); copy.type = "button"; copy.textContent = t(["not-started", "created", "restoring"].includes(bom.phase) ? "bomCopy" : "bomVerify");
+    copy.disabled = state.migrating || !bom.supported || !state.bomReport.targetReady;
+    copy.addEventListener("click", () => transferManagedBom(bom)); actions.append(copy); article.append(actions);
+    if (bom.verification?.remaining) {
+      const remaining = bom.verification.remaining;
+      const issues = [...remaining.gaps.map((gap) => gap.name), ...remaining.columns.map((col) => col.title)];
+      if (remaining.cells.length) issues.push(`${remaining.cells.length} ${t("bomCells")}`);
+      if (remaining.settings) issues.push(t("bomSettings"));
+      if (issues.length) { const info = document.createElement("small"); info.textContent = `${t("bomRemaining")}: ${issues.join(", ")}`; article.append(info); }
+      if (remaining.gaps.some((gap) => ["row", "part", "row-count"].includes(gap.type))) { const warning = document.createElement("p"); warning.className = "report-warnings"; warning.textContent = t("bomDesignDifference"); article.append(warning); }
+      if (remaining.gaps.length) {
+        const comparison = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = `${t("bomComparison")} (${remaining.gaps.length})`; comparison.append(summary);
+        const table = document.createElement("table"); table.className = "bom-comparison";
+        const heading = document.createElement("tr");
+        for (const key of ["bomLine", "bomField", "bomSourceValue", "bomTargetValue"]) { const cell = document.createElement("th"); cell.textContent = t(key); heading.append(cell); }
+        const thead = document.createElement("thead"); thead.append(heading); table.append(thead);
+        const body = document.createElement("tbody");
+        for (const gap of remaining.gaps) {
+          const row = document.createElement("tr");
+          const field = gap.field || t(({ row: "bomMissingRow", "target-row": "bomExtraRow", part: "bomPart", "row-count": "bomCount", column: "bomColumn" })[gap.type] || "bomValue");
+          for (const value of [gap.name, field, gap.sourceValue, gap.targetValue]) { const cell = document.createElement("td"); cell.textContent = value === undefined ? "—" : typeof value === "string" ? value : JSON.stringify(value); row.append(cell); }
+          body.append(row);
+        }
+        table.append(body); comparison.append(table); article.append(comparison);
+      }
+      const download = document.createElement("a"); download.href = `/api/projects-migration/boms/report?${new URLSearchParams({ projectId: state.selected.id, bomId: bom.bomId })}`;
+      download.download = `${bom.name}-migration.json`; download.textContent = t("bomDownload"); article.append(download);
+    }
+    root.append(article);
+  }
+}
+
+async function transferManagedBom(bom) {
+  if (state.migrating || !state.selected || !state.bomReport?.targetReady) return;
+  const project = state.selected, folderId = state.folderId;
+  state.migrating = true; updateActions(); renderProjects(); renderManagedBoms();
+  log(t("bomWorking"), "INFO", bom.name);
+  try {
+    const route = ["not-started", "created", "restoring"].includes(bom.phase) ? "migrate" : "validate";
+    const result = await api(`/api/projects-migration/boms/${route}`, { method: "POST", body: JSON.stringify({ projectId: project.id, targetFolderId: folderId, bomId: bom.bomId }) });
+    log(result, result.status === "copied" ? "BOM" : "WARNING", bom.name);
+  } catch (error) { log(error.message, "ERROR", bom.name); }
+  finally { state.migrating = false; updateActions(); renderProjects(); await loadManagedBoms(true); }
 }
 
 function statusCard(label, ok) {
@@ -284,6 +408,7 @@ async function loadProjects(refresh = false) {
   renderProjects(); updateActions();
   log(`${state.rows.length} projet(s) source chargé(s)`, "INFO", "Source");
   if (state.selected && state.folderId) analyzeSelectedProject(refresh);
+  if (state.selected) loadManagedBoms(refresh);
 }
 
 async function boot() {
@@ -359,7 +484,7 @@ $("#languageSelect").addEventListener("change", (event) => { language = event.ta
 $("#projectFilter").addEventListener("input", renderProjects);
 $("#targetProjectFilter").addEventListener("input", renderTargetProjects);
 $("#refreshProjects").addEventListener("click", () => Promise.all([loadProjects(true), loadTargetProjects()]));
-$("#targetFolder").addEventListener("change", (event) => { state.folderId = event.target.value; loadTargetProjects(); analyzeSelectedProject(); });
+$("#targetFolder").addEventListener("change", (event) => { state.folderId = event.target.value; loadTargetProjects(); analyzeSelectedProject(); loadManagedBoms(); });
 $("#sourceWorkspaceSelect").addEventListener("change", async (event) => { await api("/api/source-workspace", { method: "POST", body: JSON.stringify({ id: event.target.value }) }); window.location.reload(); });
 $("#migrateProject").addEventListener("click", async () => {
   if (state.migrating || !state.report?.executable) return;
@@ -367,6 +492,7 @@ $("#migrateProject").addEventListener("click", async () => {
   const project = state.selected;
   updateActions();
   renderProjects();
+  renderManagedBoms();
   const validationOnly = state.report?.awaitingCloud;
   if (!validationOnly && state.report?.creationMode?.startsWith("designer-")) log(t("designerConfirm"), "INFO", project.name);
   try {
@@ -377,7 +503,7 @@ $("#migrateProject").addEventListener("click", async () => {
     await loadProjects(true);
     await loadTargetProjects();
   } catch (error) { state.report = null; log(error.message, "ERROR", project?.name || "Migration"); }
-  finally { state.migrating = false; updateActions(); renderProjects(); }
+  finally { state.migrating = false; updateActions(); renderProjects(); renderManagedBoms(); }
 });
 
 $("#openSettings").addEventListener("click", () => openSettings().catch((error) => log(error.message, "ERROR", "Configuration")));

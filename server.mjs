@@ -23,6 +23,7 @@ import { saveProjectJournal } from "./lib/project-journal.mjs";
 import { supportedProjectTypes, projectKind } from "./lib/project-types.mjs";
 import { projectChildProjects } from "./lib/project-types.mjs";
 import { analyzeMultiboardDependencies } from "./lib/project-dependency-plan.mjs";
+import { bomGuid, bomSnapshotHash, bomDesignDocuments, listManagedBoms, bomsForProject, bomServiceUrl, requestBomService, assertBomParent, assertBomProvenance, migrateManagedBom } from "./lib/project-boms.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = path.resolve(process.env.ALTIUM_DATA_ROOT || __dirname);
@@ -787,6 +788,118 @@ async function publishedProjectWorkingCopyFile(workingCopy, projectGuid, project
     const paths = await validateMigrationProjectPath(workingCopy, filename);
     return readFile(paths.projectFullPath);
   }, projectType);
+}
+
+function projectBomClient(workspace) {
+  // Capture credentials and endpoint together; a read finishing after a source
+  // switch must never mix workspaces or persist another source's inventory.
+  const endpoint = endpoints[workspace], token = tokens[workspace];
+  let service;
+  return {
+    endpoint,
+    async inventory(refresh = false) {
+      const key = createHash("sha256").update(endpoint).digest("hex");
+      const filename = path.join(cacheDir, "project-boms", `${key}.json`);
+      const cached = await readJsonFile(filename, null);
+      if (!refresh && cached?.endpoint === endpoint && cached.version === 1 && Array.isArray(cached.rows)
+        && Date.now() - Date.parse(cached.cachedAt) < cacheTtlMs) return cached.rows;
+      const rows = await listManagedBoms(async (query, variables, operationName) => {
+        const response = await fetch(endpoint, { method: "POST", redirect: "error", signal: AbortSignal.timeout(60_000),
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ query, variables, operationName }) });
+        const payload = await response.json();
+        if (!response.ok || payload.errors?.length) throw new Error(`BOM Portal inventory failed (HTTP ${response.status}): ${(payload.errors || []).map((error) => error.message).join("; ")}`);
+        return payload.data;
+      });
+      await mkdir(path.dirname(filename), { recursive: true });
+      await saveProjectJournal(filename, { endpoint, version: 1, cachedAt: new Date().toISOString(), rows });
+      return rows;
+    },
+    async native(route, options = {}) {
+      if (!service) {
+        const response = await fetch(new URL("/api/configuration", endpoint), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+        if (!response.ok) throw new Error(`BOM service discovery failed (HTTP ${response.status}).`);
+        service = bomServiceUrl(await response.json(), endpoint);
+      }
+      return requestBomService({ baseUrl: service, token, route, ...options });
+    }
+  };
+}
+
+function projectBomRecordPath(projectId, bomId) {
+  const key = createHash("sha256").update(`${endpoints.source}|${endpoints.target}|${projectId}|${bomGuid(bomId)}`).digest("hex");
+  return path.join(dataRoot, "migration_state", "project-boms", `${key}.json`);
+}
+
+async function projectManagedBoms(projectId, targetFolderId, refresh = false) {
+  if (!projectId) throw httpError(400, "Source project id is required");
+  const project = await projectMigrationDetails(projectId);
+  const client = projectBomClient("source");
+  const rows = bomsForProject(await client.inventory(refresh), project.projectId);
+  const parent = await readJsonFile(projectTransferRecordPath(projectId), null);
+  let targetReady = false;
+  try { assertBomProvenance(parent, { sourceProjectId: projectId, targetEndpoint: endpoints.target, targetFolderId }); targetReady = project.projectType === "PCB_PROJECT"; } catch { /* Display separately from project readiness. */ }
+  return { targetReady, rows: await Promise.all(rows.map(async (bom) => {
+    const record = await readJsonFile(projectBomRecordPath(projectId, bom.bomId || bom.id), null);
+    return { id: bom.id, bomId: bomGuid(bom.bomId || bom.id), name: bom.name, variantName: bom.variantName,
+      supported: bom.supported, reason: bom.reason, updatedAt: bom.updatedAt,
+      sourceUrl: new URL(`/bom/${bomGuid(bom.bomId || bom.id)}`, client.endpoint).href,
+      targetUrl: record?.targetBomId ? new URL(`/bom/${bomGuid(record.targetBomId)}`, endpoints.target).href : null,
+      phase: record?.phase || "not-started", verification: record?.verification || null };
+  })) };
+}
+
+async function migrateProjectManagedBom(body, verifyOnly = false, analyzeOnly = false) {
+  if (!body.projectId || !body.targetFolderId || !body.bomId) throw httpError(400, "projectId, targetFolderId and bomId are required");
+  const source = projectBomClient("source"), target = projectBomClient("target");
+  const project = await projectMigrationDetails(body.projectId);
+  if (project.projectType !== "PCB_PROJECT") throw httpError(409, "BOM Portal creation from design is supported for PCB projects only.");
+  let parent;
+  try { parent = assertBomProvenance(await readJsonFile(projectTransferRecordPath(body.projectId), null), {
+    sourceProjectId: body.projectId, targetEndpoint: target.endpoint, targetFolderId: body.targetFolderId
+  }); } catch (error) { throw httpError(409, error.message); }
+  const bom = bomsForProject(await source.inventory(true), project.projectId).find((row) => bomGuid(row.bomId || row.id) === bomGuid(body.bomId));
+  if (!bom) throw httpError(404, "This Managed BOM is not associated with the selected source project.");
+  if (!bom.supported) throw httpError(409, "This BOM uses a release, pinned revision or consolidated source. Its source data remains in the original workspace; it cannot be silently recreated from the latest design.");
+  const sourceDetails = await source.native(`boms/${bomGuid(body.bomId)}/details`);
+  if (bomGuid(sourceDetails.bom?.source?.designId) !== bomGuid(project.projectId) || sourceDetails.bom.source.type !== "design"
+    || (sourceDetails.bom.source.variantName || "") !== bom.variantName) throw httpError(409, "The source BOM association changed during analysis.");
+  const validation = await verifyManagedBomProject(project, parent, body.targetFolderId, bom.variantName);
+  const context = { sourceEndpoint: source.endpoint, targetEndpoint: target.endpoint, sourceProjectId: project.id,
+    sourceBomId: bomGuid(body.bomId), targetProjectGuid: bomGuid(parent.targetProjectGuid),
+    folderGuid: bomGuid(validation.placementVerification.parentFolderId), name: bom.name, variantName: bom.variantName };
+  if (analyzeOnly) return { status: "ready", name: bom.name, variantName: bom.variantName, sourceHash: bomSnapshotHash(sourceDetails),
+    sourceRows: sourceDetails.grid.rows.length, sourceColumns: sourceDetails.grid.columns.length, parentVerification: validation };
+  const filename = projectBomRecordPath(project.id, body.bomId);
+  await mkdir(path.dirname(filename), { recursive: true });
+  // Keep a complete source snapshot locally for review, including data the
+  // destination API cannot reconstruct. Never publish it to Git or Designer.
+  await writeFile(filename.replace(/\.json$/, `.${bomSnapshotHash(sourceDetails)}.source.json`), JSON.stringify(sourceDetails, null, 2), { flag: "wx" }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+  const result = await migrateManagedBom({ context, source: sourceDetails,
+    readRecord: () => readJsonFile(filename, null), saveRecord: (record) => saveProjectJournal(filename, record),
+    native: target.native, listTargets: () => target.inventory(true), verifyOnly });
+  return { ...result, name: bom.name, parentVerification: validation, targetUrl: result.targetBomId ? new URL(`/bom/${result.targetBomId}`, target.endpoint).href : null };
+}
+
+async function verifyManagedBomProject(project, record, targetFolderId, variantName) {
+  const [target, folder] = await Promise.all([targetProjectRepository(record.targetProjectId), resolveTargetFolder("projects", targetFolderId)]);
+  if (bomGuid(target.projectId) !== bomGuid(record.targetProjectGuid) || target.projectType !== "PCB_PROJECT") throw httpError(409, "The recorded BOM destination project identity changed.");
+  const [sourceSnapshot, destination] = await Promise.all([projectRepositorySnapshot("source", project), projectRepositorySnapshot("target", target)]);
+  if (record.sourceHead !== sourceSnapshot.head) throw httpError(409, "The source design changed after the recorded project transfer; verify its current migration before copying the BOM.");
+  const sourceRefs = (await git([`--git-dir=${sourceSnapshot.mirrorPath}`, "for-each-ref", "--format=%(objectname) %(refname)"], tokens.source)).stdout;
+  const targetRefs = (await git([`--git-dir=${destination.mirrorPath}`, "for-each-ref", "--format=%(objectname) %(refname)"], tokens.target)).stdout;
+  const historyVerification = await verifyNativeProjectHistory({ sourceOutput: sourceRefs, targetOutput: targetRefs,
+    isAncestor: async (a, b) => { try { await git([`--git-dir=${destination.mirrorPath}`, "merge-base", "--is-ancestor", a, b], tokens.target); return true; } catch { return false; } } });
+  const fileVerification = assertSourceFilesPreserved(sourceSnapshot.entries, destination.entries, { sourceProjectFilename: sourceSnapshot.filename });
+  const placementVerification = await verifyTargetProjectPlacement(target.projectId, project.name, folder);
+  const data = await graphql("target", "query ManagedBomTargetVariants($id: ID!) { desProjectById(id: $id) { design { variants { name pcb { documentName } schematics { documentName } } } } }", { id: target.id }, "ManagedBomTargetVariants");
+  const documents = bomDesignDocuments(data.desProjectById?.design?.variants || [], variantName, projectDesignDocuments(sourceSnapshot.bytes));
+  const cloudVerification = await verifyPublishedProjectCloud(target, { targetHead: destination.head, expectedDocuments: documents.expectedDocuments }, { attempts: 1 });
+  // This is a new, BOM-specific read-only qualification of the current design.
+  // Do not rewrite the original project journal or relax its migration checks.
+  const proof = { sourceHead: sourceSnapshot.head, targetHead: destination.head, historyVerification: { ...historyVerification, fileVerification },
+    placementVerification, cloudVerification, secondaryPcbDocuments: documents.secondaryPcbDocuments };
+  assertBomParent({ ...record, ...proof, phase: "completed" }, { sourceProjectId: project.id, targetEndpoint: endpoints.target, targetFolderId });
+  return proof;
 }
 
 async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh = false, reuseEmptyTarget = false) {
@@ -3553,6 +3666,7 @@ async function handleApi(req, res, url) {
       return;
     }
     if (url.pathname === "/api/restart" && req.method === "POST") {
+      if (activeProjectTransfers.size) throw httpError(409, "Wait for the active transfer before reloading workspace settings.");
       reloadRuntimeConfig();
       sendJson(res, 200, { ok: true, reloadedAt: new Date().toISOString(), ...publicConfig() });
       return;
@@ -3642,6 +3756,28 @@ async function handleApi(req, res, url) {
     if (url.pathname === "/api/projects-migration/preflight" && req.method === "POST") {
       const body = await readJsonBody(req);
       sendJson(res, 200, await projectMigrationPreflight(body.projectId, body.targetFolderId, body.refresh === true, body.reuseEmptyTarget === true));
+      return;
+    }
+    if (url.pathname === "/api/projects-migration/boms" && req.method === "GET") {
+      sendJson(res, 200, await projectManagedBoms(url.searchParams.get("projectId"), url.searchParams.get("targetFolderId"), url.searchParams.get("refresh") === "true"));
+      return;
+    }
+    if (url.pathname === "/api/projects-migration/boms/report" && req.method === "GET") {
+      const filename = projectBomRecordPath(url.searchParams.get("projectId"), url.searchParams.get("bomId"));
+      const record = await readJsonFile(filename, null);
+      if (!record || record.sourceProjectId !== url.searchParams.get("projectId") || record.targetEndpoint !== endpoints.target || !/^[a-f0-9]{64}$/.test(record.sourceHash)) throw httpError(404, "No BOM transfer report exists for this workspace and source project.");
+      const snapshot = await readJsonFile(filename.replace(/\.json$/, `.${record.sourceHash}.source.json`), null);
+      sendJson(res, 200, { transfer: record, source: snapshot ? { name: snapshot.bom.name, production: snapshot.bom.production, settings: snapshot.bom.settings,
+        association: snapshot.bom.source, grid: snapshot.grid } : null });
+      return;
+    }
+    if (["/api/projects-migration/boms/migrate", "/api/projects-migration/boms/validate", "/api/projects-migration/boms/preflight"].includes(url.pathname) && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const transferKey = `${activeSourceWorkspaceId}|${body.projectId}|${endpoints.target}`;
+      if (activeProjectTransfers.has(transferKey)) throw httpError(409, "A transfer for this project is already running");
+      activeProjectTransfers.add(transferKey);
+      try { sendJson(res, 200, await migrateProjectManagedBom(body, url.pathname.endsWith("/validate"), url.pathname.endsWith("/preflight"))); }
+      finally { activeProjectTransfers.delete(transferKey); }
       return;
     }
     if (["/api/projects-migration/migrate", "/api/projects-migration/validate"].includes(url.pathname) && req.method === "POST") {

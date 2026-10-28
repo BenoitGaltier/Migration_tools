@@ -20,7 +20,7 @@ const kind = scenario.startsWith("harness") ? { type: "HARNESS_DESIGN", extensio
 const nested = scenario === "nested" || scenario.includes("-nested"), withChild = scenario.startsWith("system") && scenario.endsWith("-child"), name = "Prototype Board", baseFilename = `Device.${kind.extension}`, filename = nested ? "nested with spaces/" + baseFilename : baseFilename;
 const childSourceGuid = "77777777-7777-4777-8777-777777777777", childTargetGuid = "88888888-8888-4888-8888-888888888888";
 const childReference = (nested ? "../../" : "../") + "Child/Child.PrjPcb";
-const documentNames = scenario.endsWith("wiring-only") ? kind.documents.slice(0, 1) : kind.documents;
+const documentNames = scenario.endsWith("wiring-only") ? kind.documents.slice(0, 1) : scenario === "managed-boms" ? [...kind.documents, "Panelization.PcbDoc"] : kind.documents;
 const lostResponse = scenario === "lost-publication-response" || scenario.endsWith("lost-response");
 const seed = path.join(root, "seed"), sourceRepo = path.join(root, "source.git"), targetRepo = path.join(root, "target.git"), stateRoot = path.join(root, "state");
 await mkdir(path.join(root, "temp"), { recursive: true }); await mkdir(seed); await mkdir(stateRoot);
@@ -83,12 +83,41 @@ async function targetProject() {
   return { ...state.target, design: { releases: { totalCount: 0 }, variants: kind.type !== "PCB_PROJECT" || state.pending && scenario !== "legacy-status" ? [] : variants() } };
 }
 const realFetch = globalThis.fetch;
+const sourceBomGuid = "99999999-1111-4111-8111-111111111111", targetBomGuid = "99999999-2222-4222-8222-222222222222";
+let targetBom = null, bomCreates = 0, bomWrites = 0;
+function bomDetails(target = false) {
+  const guid = target ? targetBomGuid : sourceBomGuid;
+  return { guid, bom: { guid, name: "Fixture Procurement", folderGuid, source: { type: "design", designId: target ? state.target.projectId : sourceGuid },
+    production: { quantity: 5, dueDate: null }, settings: { country: { code: "FR" }, currency: { code: "EUR" } }, initializationInProgress: false },
+    grid: { columns: [ ["ref", "bom:designator"], ["qty", "bom:quantity"], ["part", "bom:part-number"], ["note", "bom:custom-attribute:note"] ].map(([id, hrid]) => ({ id, hrid, title: id, dataType: id === "qty" ? "integer" : "string", origin: "bom", attributes: { editable: true } })),
+      rows: [{ id: target ? "target-row" : "source-row", data: { ref: { rawValue: "R1" }, qty: { rawValue: 1 }, part: { rawValue: "RES100" }, note: { rawValue: target ? "" : "Approved part" } } }] } };
+}
 globalThis.fetch = async (input, options = {}) => {
   const url = new URL(input);
   if (["127.0.0.1", "localhost"].includes(url.hostname)) return realFetch(input, options);
   assert.ok(url.hostname.endsWith(".example.365.altium.com") || url.hostname === "region.365.altium.com", "Tests must not contact a real workspace");
   const isSource = url.hostname.startsWith("source.");
   assert.equal(options.headers.authorization, "Bearer " + (isSource ? "fake-source-token" : "fake-target-token"));
+  if (url.pathname.startsWith("/svc/bom/api/v1/")) {
+    assert.equal(scenario, "managed-boms");
+    const route = url.pathname.slice("/svc/bom/api/v1/".length);
+    if (route === "import/design") {
+      assert.equal(isSource, false); assert.equal(options.method, "POST");
+      const body = JSON.parse(options.body); assert.equal(body.designId, state.target.projectId.toLowerCase()); assert.equal(body.folderGuid, folderGuid);
+      const records = await readdir(path.join(stateRoot, "migration_state", "project-boms"));
+      assert.ok(records.some((file) => file.endsWith(".json") && !file.includes(".source.")), "Provenance must precede BOM creation");
+      bomCreates++; targetBom = bomDetails(true); return Response.json({ guid: targetBomGuid });
+    }
+    if (route === `boms/${targetBomGuid}/grid/batch/cells`) {
+      assert.equal(isSource, false); assert.equal(options.method, "PUT"); bomWrites++;
+      for (const cell of JSON.parse(options.body).cells) targetBom.grid.rows.find((row) => row.id === cell.rowId).data[cell.columnId] = { rawValue: cell.rawValue };
+      return Response.json({});
+    }
+    assert.equal(options.method, "GET");
+    if (route === `boms/${sourceBomGuid}/details` && isSource) return Response.json(bomDetails());
+    if (route === `boms/${targetBomGuid}/details` && !isSource) return Response.json(targetBom);
+    throw new Error("Unexpected BOM fixture request: " + route);
+  }
   if (options.method === "POST") {
     const { query, variables, operationName } = JSON.parse(options.body);
     assert.match(query, /^\s*query\b/, "Project migration must not upload a snapshot or modify source releases");
@@ -98,7 +127,8 @@ globalThis.fetch = async (input, options = {}) => {
       return Response.json({errors:[{message:"Cannot get VCS revision for project: unsupported URL protocol"}]});
     }
     let data;
-    if (/desLibrary/.test(query)) data = { desLibrary: { folders: allFolders() } };
+    if (/bomBoms/.test(query)) data = { bomBoms: { pageInfo: { hasNextPage: false }, nodes: isSource ? [{ id: sourceBomGuid, bomId: sourceBomGuid, name: "Fixture Procurement", sources: [{ __typename: "BomDesignSource", designId: sourceGuid, quantity: 1 }] }] : targetBom ? [{ id: targetBomGuid, bomId: targetBomGuid, name: targetBom.bom.name, sources: [{ __typename: "BomDesignSource", designId: state.target.projectId }] }] : [] } };
+    else if (/desLibrary/.test(query)) data = { desLibrary: { folders: allFolders() } };
     else if (/FindTargetProject/.test(operationName || query)) data = { desProjects: { nodes: lostResponse ? [] : state.target ? [await targetProject()] : [] } };
     else if (/desProjectIdFromAfsId/.test(query)) data = { desProjectIdFromAfsId: { projectId: state.target?.id } };
     else if (/desProjectById/.test(query)) data = { desProjectById: isSource ? variables.id === childSource?.id ? childSource : source : variables.id === childTarget?.id ? childTarget : await targetProject() };
@@ -106,7 +136,7 @@ globalThis.fetch = async (input, options = {}) => {
     else throw new Error("Unhandled fixture GraphQL operation " + operationName);
     return Response.json({ data });
   }
-  if (url.pathname === "/api/configuration") return Response.json({ services: [{ name: "platform-api", apiUrl: "https://region.365.altium.com/napi/graphql" }, { name: "files-service-api", apiUrl: "https://region.365.altium.com/files/" }] });
+  if (url.pathname === "/api/configuration") return Response.json({ services: [{ name: "platform-api", apiUrl: "https://region.365.altium.com/napi/graphql" }, { name: "files-service-api", apiUrl: "https://region.365.altium.com/files/" }, { name: "bom", apiUrl: url.origin + "/svc/bom/api" }] });
   if (url.pathname === "/svc/explorer/api/v1/entities") { const entities = [...(childTarget ? [childEntity()] : []), ...(state.target ? [entity()] : [])]; return Response.json({ entities, totalEntities: entities.length }); }
   if (url.pathname.startsWith("/svc/explorer/api/v1/entities/")) return url.pathname.endsWith(childTargetGuid) && childTarget ? Response.json(childEntity()) : state.target ? Response.json(entity()) : Response.json({ error: "Not found" }, { status: 404 });
   if (/\/multicad\/api\/v1\/projects\//.test(url.pathname)) { const p = url.pathname.endsWith(childTargetGuid) && childTarget ? childTarget : state.target; return Response.json({ Guid: p.projectId, Name: p.name, FolderPath: folder.path + "/" + p.name, ParentFolderGuid: folderGuid, ParentFolderPath: folder.path }); }
@@ -169,6 +199,14 @@ await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${app.address().port}`;
 async function call(route) { const response = await realFetch(base + "/api/projects-migration/" + route, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: source.id, targetFolderId: folder.id, refresh: true, dryRun: false }) }); return { status: response.status, body: await response.json() }; }
 try {
+  let boms = null;
+  const bomBody = () => JSON.stringify({ projectId: source.id, targetFolderId: folder.id, bomId: sourceBomGuid });
+  const bomCall = async (route) => { const response = await realFetch(base + "/api/projects-migration/boms/" + route, { method: "POST", headers: { "content-type": "application/json" }, body: bomBody() }); return { status: response.status, body: await response.json() }; };
+  if (scenario === "managed-boms") {
+    const listing = await (await realFetch(base + "/api/projects-migration/boms?" + new URLSearchParams({ projectId: source.id, targetFolderId: folder.id }))).json();
+    assert.equal(listing.targetReady, false); assert.equal(listing.rows[0].bomId, sourceBomGuid); assert.equal(bomCreates, 0);
+    const blocked = await bomCall("migrate"); assert.notEqual(blocked.status, 200); assert.equal(bomCreates, 0);
+  }
   const preflight = await call("preflight");
   let first = null, second = null;
   if (scenario !== "catalog-collision") {
@@ -176,7 +214,7 @@ try {
       const pending = call("migrate");
       for (let i = 0; i < 3000 && !state.nativeWaiting; i++) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.ok(state.nativeWaiting, "Native fixture must have started");
-      for (const route of ["settings", "source-workspace"]) {
+      for (const route of ["settings", "source-workspace", "restart"]) {
         const response = await realFetch(base + "/api/" + route, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
         assert.equal(response.status, 409, "Workspace configuration must stay fixed during a transfer");
       }
@@ -185,6 +223,22 @@ try {
     if (lostResponse) second = await call("migrate");
     if (scenario === "harness-lost-native-response") second = await call("migrate");
     if (scenario.endsWith("cloud-pending")) { state.pending = false; state.bridgeStopped = true; second = await call("validate"); }
+  }
+  if (scenario === "managed-boms") {
+    const edited = path.join(root, "post-migration-edit"); await git(["clone", targetRepo, edited]);
+    await writeFile(path.join(edited, "manual-release-notes.txt"), "User added a release reference after migration\n");
+    await git(["-C", edited, "add", "."]); await git(["-C", edited, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "User documentation update"]);
+    await git(["-C", edited, "push", "origin", "HEAD"]);
+    const originalHead = await git([`--git-dir=${targetRepo}`, "rev-parse", "HEAD"]);
+    const copied = await bomCall("migrate"), verified = await bomCall("validate"), repeated = await bomCall("migrate");
+    const listing = await (await realFetch(base + "/api/projects-migration/boms?" + new URLSearchParams({ projectId: source.id, targetFolderId: folder.id }))).json();
+    boms = { copied, verified, repeated, listing, bomCreates, bomWrites };
+    const reportResponse = await realFetch(base + "/api/projects-migration/boms/report?" + new URLSearchParams({ projectId: source.id, bomId: sourceBomGuid }));
+    assert.equal(reportResponse.status, 200);
+    const reportText = await reportResponse.text(), report = JSON.parse(reportText);
+    assert.equal(report.transfer.targetBomId, targetBomGuid); assert.equal(report.source.grid.rows[0].data.note.rawValue, "Approved part");
+    assert.ok(!reportText.includes("fake-source-token") && !reportText.includes("fake-target-token"));
+    assert.equal(await git([`--git-dir=${targetRepo}`, "rev-parse", "HEAD"]), originalHead, "BOM transfer must not change the design repository");
   }
   const currentSourceHead = await git([`--git-dir=${sourceRepo}`, "rev-parse", "HEAD"]);
   let integrity = null;
@@ -203,5 +257,5 @@ try {
   }
   const transfers = await readdir(path.join(stateRoot, "migration_state", "project-transfers")).catch(() => []);
   const records = await Promise.all(transfers.filter((file) => file.endsWith(".json")).map(async (file) => JSON.parse(await readFile(path.join(stateRoot, "migration_state", "project-transfers", file), "utf8"))));
-  console.log(JSON.stringify({ scenario, preflight, first, second, publishCalls: state.publishCalls, nativeCalls: state.nativeCalls, sourceUnchanged: currentSourceHead === sourceHead, integrity, phases: records.map((record) => record.phase) }));
+  console.log(JSON.stringify({ scenario, preflight, first, second, boms, publishCalls: state.publishCalls, nativeCalls: state.nativeCalls, sourceUnchanged: currentSourceHead === sourceHead, integrity, phases: records.map((record) => record.phase) }));
 } finally { state.released = true; await new Promise((resolve) => app.close(resolve)); await new Promise((resolve) => bridge.close(resolve)); }
