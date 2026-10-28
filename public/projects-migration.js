@@ -12,6 +12,7 @@ const messages = {
     noTargetProjects: "Aucun projet dans ce répertoire", loadingTargetProjects: "Chargement des projets de destination…",
     designerPublish: "Publication par Altium Designer",
     resumeProject: "Reprendre la migration", resumeNotice: "Reprise du projet déjà créé par l’app : aucune nouvelle création.",
+    pcbType: "PCB", harnessType: "Harnais", systemType: "Multiboard", childProjects: "Projets enfants", childReady: "Cible vérifiée", childPending: "À migrer et vérifier", childBlocked: "Vérification requise", childHelp: "Migrez et vérifiez les projets enfants dans le workspace cible avant de migrer ce multiboard.", sourceGuid: "GUID source", targetGuid: "GUID cible",
     verifyCloud: "Vérifier la publication cloud", pendingCloud: "Historique et fichiers vérifiés — génération cloud à confirmer", pendingNotice: "Le transfert est conservé. Cette vérification relit le même projet cible sans relancer Designer ni créer un projet.",
     alreadyMigrated: "Déjà migré — historique vérifié", completedNotice: "Migration terminée sur le projet cible existant. Aucune nouvelle migration n’est nécessaire.",
     designerConfirm: "Designer peut demander de confirmer « Migrate Project » : validez Migrer, puis OK. L’app vérifie ensuite le dépôt et l’historique avant d’annoncer le succès.",
@@ -35,6 +36,7 @@ const messages = {
     noTargetProjects: "No hay proyectos en esta carpeta", loadingTargetProjects: "Cargando proyectos de destino…",
     designerPublish: "Publicación mediante Altium Designer",
     resumeProject: "Reanudar migración", resumeNotice: "Se reanudará el proyecto ya creado por la app, sin crear otro.",
+    pcbType: "PCB", harnessType: "Arnés", systemType: "Multiboard", childProjects: "Subproyectos", childReady: "Destino verificado", childPending: "Migrar y verificar", childBlocked: "Verificación necesaria", childHelp: "Migre y verifique los subproyectos en el workspace de destino antes de migrar el multiboard.", sourceGuid: "GUID de origen", targetGuid: "GUID de destino",
     verifyCloud: "Verificar publicación cloud", pendingCloud: "Historial y archivos verificados — generación cloud pendiente", pendingNotice: "La transferencia se conserva. La verificación consulta el mismo destino sin volver a publicar ni crear otro proyecto.",
     alreadyMigrated: "Ya migrado — historial verificado", completedNotice: "Migración completada en el proyecto de destino existente. No es necesario repetirla.",
     designerConfirm: "Si Designer muestra Migrate Project, confirme Migrate y después OK. La app verificará el repositorio y el historial antes de confirmar el éxito.",
@@ -57,6 +59,7 @@ const messages = {
     noTargetProjects: "No projects in this folder", loadingTargetProjects: "Loading target projects…",
     designerPublish: "Publish through Altium Designer",
     resumeProject: "Resume migration", resumeNotice: "Resuming the project already created by this app; no new project will be created.",
+    pcbType: "PCB", harnessType: "Harness", systemType: "Multiboard", childProjects: "Child projects", childReady: "Target verified", childPending: "Migrate and verify first", childBlocked: "Verification required", childHelp: "Migrate and verify the child projects in the destination workspace before migrating this multiboard.", sourceGuid: "Source GUID", targetGuid: "Target GUID",
     verifyCloud: "Verify cloud publication", pendingCloud: "History and files verified — cloud generation awaiting confirmation", pendingNotice: "The transfer is retained. Verification reads the same target without another Designer command or project creation.",
     alreadyMigrated: "Already migrated — history verified", completedNotice: "Migration completed on the existing destination project. No new migration is needed.",
     designerConfirm: "If Designer displays Migrate Project, confirm Migrate, then OK. The app verifies the repository and history before reporting success.",
@@ -73,6 +76,8 @@ let language = localStorage.getItem("altium-migration-language") || "fr";
 if (!messages[language]) language = "fr";
 const t = (key) => messages[language][key] || messages.fr[key] || key;
 const $ = (selector) => document.querySelector(selector);
+const typeLabel = (type) => t(({ PCB_PROJECT: "pcbType", HARNESS_DESIGN: "harnessType", SYSTEM_DESIGN: "systemType" })[type] || type);
+const projectMeta = (project) => `${typeLabel(project.projectType)} · ${project.revisionCount} ${t("revisions")} · ${project.releaseCount} ${t("releases")}`;
 
 async function api(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { "content-type": "application/json", ...(options.headers || {}) } });
@@ -107,12 +112,13 @@ function translate() {
   document.querySelectorAll("[data-project-i18n-placeholder]").forEach((node) => { node.placeholder = t(node.dataset.projectI18nPlaceholder); });
   renderProjects();
   renderTargetProjects();
+  if (state.selected) $("#selectedProjectMeta").textContent = `${projectMeta(state.selected)} · ${state.selected.repositoryType}`;
   if (state.report) renderReport(state.report);
 }
 
 function renderProjects() {
   const term = $("#projectFilter").value.trim().toLowerCase();
-  const rows = state.rows.filter((row) => !term || [row.name, row.description, row.projectType].filter(Boolean).join(" ").toLowerCase().includes(term));
+  const rows = state.rows.filter((row) => !term || [row.name, row.description, row.projectType, typeLabel(row.projectType)].filter(Boolean).join(" ").toLowerCase().includes(term));
   $("#projectCount").textContent = `${rows.length} / ${state.rows.length}`;
   const list = $("#projectsList");
   list.replaceChildren();
@@ -125,7 +131,7 @@ function renderProjects() {
     const name = document.createElement("strong");
     name.textContent = row.name || row.projectId;
     const meta = document.createElement("span");
-    meta.textContent = `${row.projectType} · ${row.revisionCount} ${t("revisions")} · ${row.releaseCount} ${t("releases")}`;
+    meta.textContent = projectMeta(row);
     const description = document.createElement("small");
     description.textContent = row.description || row.repositoryType || "";
     button.append(name, meta, description);
@@ -178,7 +184,7 @@ function selectProject(project) {
   state.report = null;
   $("#preflightReport").hidden = true;
   $("#selectedProjectName").textContent = project.name || project.projectId;
-  $("#selectedProjectMeta").textContent = `${project.projectType} · ${project.revisionCount} ${t("revisions")} · ${project.releaseCount} ${t("releases")} · ${project.repositoryType}`;
+  $("#selectedProjectMeta").textContent = `${projectMeta(project)} · ${project.repositoryType}`;
   updateActions();
   renderProjects();
   analyzeSelectedProject();
@@ -220,6 +226,21 @@ function renderReport(report) {
   if (report.alreadyMigrated) { const notice = document.createElement("p"); notice.className = "api-limitation"; notice.textContent = t("completedNotice"); root.append(notice); }
   const blockers = messageList(t("blockers"), report.blockers, "report-blockers"); if (blockers) root.append(blockers);
   const warnings = messageList(t("warnings"), report.warnings, "report-warnings"); if (warnings) root.append(warnings);
+  if (report.dependencies?.children?.length) {
+    const section = document.createElement("section"); section.className = "project-dependencies";
+    const title = document.createElement("h3"); title.textContent = t("childProjects"); section.append(title);
+    if (!report.dependencies.ready) { const help = document.createElement("p"); help.textContent = t("childHelp"); section.append(help); }
+    for (const child of report.dependencies.children) {
+      const row = document.createElement("article"); row.className = "dependency-row";
+      const name = document.createElement("strong"); name.textContent = child.targetName ? `${child.name} → ${child.targetName}` : child.name;
+      const status = document.createElement("span"); status.textContent = t(child.status === "ready" ? "childReady" : child.status === "pending-migration" ? "childPending" : "childBlocked");
+      const ids = document.createElement("small"); ids.textContent = `${t("sourceGuid")}: ${child.sourceGuid} · ${t("targetGuid")}: ${child.targetGuid || "—"}`;
+      row.append(name, status, ids);
+      if (child.status === "blocked") { const reason = document.createElement("small"); reason.textContent = child.message; row.append(reason); }
+      section.append(row);
+    }
+    root.append(section);
+  }
   $("#analysisStatus").textContent = report.cache?.hit ? t("cached") : "";
   updateActions();
 }

@@ -96,7 +96,7 @@ de telechargement ne sont pas utilises par le transfert.
 
 Avant publication, les documents lies sont controles dans le depot source. Apres
 publication, l'app compare les objets Git de tous les fichiers d'origine hors
-fichiers de rattachement `.PrjPcb` et `.PrjPcbStructure`, verifies separement.
+fichiers de rattachement du projet, verifies separement.
 Les branches et tags sont preserves sans remplacer des references cibles existantes.
 Le GUID et la phase du transfert sont journalises avant chaque commande native.
 Une reponse perdue ne permet pas de recreer aveuglement un projet du meme nom.
@@ -114,7 +114,7 @@ sans la copier dans une branche de test. Les rapports et depots d'audit restent
 dans `.diagnostics`, ignore par Git.
 
 Le pre-controle verifie l'acces API cible et, a chaque analyse meme mise en cache,
-la connexion de Designer au workspace de destination. Le bridge 1.1.37 ou suivant
+la connexion de Designer au workspace de destination. Le bridge 1.1.38 ou suivant
 est requis pour la publication native et le rattachement du dossier. L'app clone l'historique complet, cree un
 depot local temporaire et une copie de travail, puis vide uniquement
 `Design/ManagedProjectGUID`. Elle ne modifie ni ne pousse jamais le depot source.
@@ -137,6 +137,12 @@ sur le depot source. Seul un depot cible INTERNAL verifie peut etre declare migr
 Les requetes natives restent ouvertes au-dela de la limite de cinq minutes des
 en-tetes de fetch ; une interruption conserve un etat en attente et n'envoie aucune
 seconde commande automatiquement.
+
+Le bridge 1.1.39 traite aussi la fermeture du client HTTP apres une longue
+confirmation native, sans tenter d'envoyer une seconde reponse sur la connexion
+fermee. Si l'attente de l'app expire mais que Designer termine ensuite, actualiser
+l'analyse permet de verifier le transfert journalise et de reprendre le meme GUID.
+Une conversion deja terminee vers INTERNAL n'est pas relancee.
 
 Chaque transfert est journalise dans `migration_state/project-transfers/` avant
 publication. Une cible inachevee creee par l'app est reconnue par son identifiant,
@@ -174,6 +180,39 @@ avec les commits de rattachement de Designer, mais doivent conserver leurs commi
 source dans leur ascendance. Un echec interrompt la migration sans annoncer de succes.
 Les copies locales restent disponibles pour inspection tant que Designer peut les
 tenir ouvertes ; aucun nettoyage automatique n'est effectue apres une publication native.
+
+### Harnais et multiboard
+
+Le parcours accepte `PCB_PROJECT` (`.PrjPcb`), `HARNESS_DESIGN` (`.PrjHar`) et
+`SYSTEM_DESIGN` (`.PrjMbd`), a la racine ou dans un sous-dossier du depot. Les
+documents primaires lies sont controles selon le type : SCH/PCB, WirDoc/LdrDoc,
+ou MbsDoc/MbaDoc. Les autres fichiers versionnes, dont les plans, BOM et OutJob,
+sont aussi compares apres publication. Le type du projet cree doit correspondre
+au type source. Le detachement porte uniquement sur `Design/ManagedProjectGUID` ;
+il conserve les GUID des projets enfants dans les sections `DocumentN`.
+
+Pour un multiboard, le pre-controle affiche ses dependances. Chaque enfant doit
+avoir un transfert termine et journalise vers le workspace cible, avec dossier
+natif, historique actuel et publication cloud verifies a nouveau. Un homonyme
+n'est jamais utilise comme correspondance. Une dependance absente, ambigue,
+modifiee sans historique cible correspondant ou epinglee a une revision publiee
+bloque la publication du parent. L'app ne migre pas les enfants automatiquement.
+
+Les enfants verifies sont clones dans la copie temporaire selon les chemins
+attendus par le parent. Seuls leurs liens dans le `.PrjMbd` et les champs source
+des modules du `.MbsDoc` sont reconnectes aux GUID Global verifies. Les connexions,
+pages et autres flux du MbsDoc restent identiques ; le MbaDoc et les depots enfants
+ne sont pas modifies. Les empreintes des transformations autorisees sont conservees
+dans le journal et comparees apres publication.
+
+L'API GraphQL peut retourner une liste de variantes vide pour un harnais ou un
+multiboard. Leur controle cloud exige donc une generation terminee, avec les
+sources `Metadata` **et** `Preview` au commit cible verifie, en plus du manifeste
+Git des documents lies. Le controle PCB conserve ses exigences SCH/PCB existantes.
+Une generation incomplete reste `awaiting-cloud`, sans nouvelle publication.
+
+La portee des controles et de l'essai connecte est detaillee dans
+[docs/project-types-validation.md](docs/project-types-validation.md).
 
 ## Prerequis
 

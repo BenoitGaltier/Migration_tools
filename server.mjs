@@ -16,10 +16,13 @@ import { assertEmptyProjectTarget, assertProjectTargetUnchanged, emptyTargetDefa
 import { assertDesignerDestination, detachManagedProject, managedProjectGuid, projectRefs, verifyNativeProjectHistory, trySaveProjectMigrationLog, nativeVcsMigrationScript, nativeProjectDescription } from "./lib/project-designer.mjs";
 import { projectNativeRequest } from "./lib/project-native-request.mjs";
 import { projectFolderRow, projectPublicationPath, projectPlacementDetailsUrl, assertProjectFolderPlacement } from "./lib/project-folder.mjs";
-import { selectMigrationProjectFile, selectPublishedProjectFile, validateMigrationProjectPath } from "./lib/project-paths.mjs";
+import { selectMigrationProjectFile, selectPublishedProjectFile, validateMigrationProjectPath, childMigrationWorkspace } from "./lib/project-paths.mjs";
 import { projectCloudState, projectDesignDocuments, waitForProjectCloudData } from "./lib/project-cloud.mjs";
 import { gitTreeEntries, assertProjectDocuments, assertSourceFilesPreserved } from "./lib/project-integrity.mjs";
 import { saveProjectJournal } from "./lib/project-journal.mjs";
+import { supportedProjectTypes, projectKind } from "./lib/project-types.mjs";
+import { projectChildProjects } from "./lib/project-types.mjs";
+import { analyzeMultiboardDependencies } from "./lib/project-dependency-plan.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = path.resolve(process.env.ALTIUM_DATA_ROOT || __dirname);
@@ -45,7 +48,7 @@ const MODEL_TRANSFER_VERSION = 2;
 const TEMPLATE_DEFINITIONS_VERSION = 3;
 const DICTIONARY_VALUES_VERSION = 2;
 const LIBRARY_RENDER_VERSION = 7;
-const PROJECT_ANALYSIS_VERSION = 11;
+const PROJECT_ANALYSIS_VERSION = 12;
 
 // Keep the local URL stable across updates and troubleshooting sessions.
 const PORT = 4173;
@@ -77,6 +80,8 @@ let projectAnalysisCacheLoaded = false;
 let footprintBindingDiagnosticsLoad = null;
 const activeProjectTransfers = new Set();
 const projectCloudWaitOptions = {};
+const projectSnapshotLoads = new Map();
+const projectDependencyPlans = new Map();
 
 function configureSystemCertificates(env) {
   if (env.ALTIUM_USE_SYSTEM_CA === "false") return;
@@ -759,7 +764,7 @@ async function recoverableProjectTransfer(project, folder, duplicates, { include
   if (record.sourceHead && record.sourceHead !== currentSourceHead) throw new Error("The source changed since the interrupted transfer; inspect the saved migration before resuming.");
   if (duplicates.length > 1) throw new Error("Several destination projects match the interrupted transfer; inspect them before resuming.");
   const expectedGuid = record.targetProjectGuid || duplicates[0]?.projectId;
-  const projectFilename = expectedGuid ? await publishedProjectWorkingCopyFile(record.localWorkingCopy, expectedGuid) : record.projectFilename;
+  const projectFilename = expectedGuid ? await publishedProjectWorkingCopyFile(record.localWorkingCopy, expectedGuid, project.projectType) : record.projectFilename;
   const guid = managedProjectGuid(await readFile(path.join(record.localWorkingCopy, projectFilename)));
   if (!guid || (duplicates.length && guid.toLowerCase() !== duplicates[0].projectId.toLowerCase())) throw new Error("The saved copy cannot be associated with the interrupted destination. No new publication is permitted.");
   if (record.targetProjectGuid && guid.toLowerCase() !== record.targetProjectGuid.toLowerCase()) return null;
@@ -776,12 +781,12 @@ async function recoverableProjectTransfer(project, folder, duplicates, { include
     projectFilename, targetProjectGuid: guid, targetProjectId, placementVerification };
 }
 
-async function publishedProjectWorkingCopyFile(workingCopy, projectGuid) {
+async function publishedProjectWorkingCopyFile(workingCopy, projectGuid, projectType = "PCB_PROJECT") {
   const listing = await git(["-C", workingCopy, "ls-files", "-z"], tokens.target);
   return selectPublishedProjectFile(listing.stdout.split("\0").filter(Boolean), projectGuid, async (filename) => {
     const paths = await validateMigrationProjectPath(workingCopy, filename);
     return readFile(paths.projectFullPath);
-  });
+  }, projectType);
 }
 
 async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh = false, reuseEmptyTarget = false) {
@@ -789,7 +794,7 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
   if (!targetFolderId) throw httpError(400, "Target project folder is required");
   await loadProjectAnalysisCache();
   const cacheKey = projectAnalysisKey(projectId, targetFolderId, reuseEmptyTarget);
-  if (!forceRefresh && projectAnalysisCache.has(cacheKey)) {
+  if (!forceRefresh && projectAnalysisCache.has(cacheKey) && projectAnalysisCache.get(cacheKey).report.project.projectType !== "SYSTEM_DESIGN") {
     const cached = projectAnalysisCache.get(cacheKey);
     return projectDesignerReadiness({ ...cached.report, cache: { hit: true, cachedAt: cached.cachedAt } }, reuseEmptyTarget);
   }
@@ -800,8 +805,10 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
   const warnings = [];
   const catalogCollision = (await listTargetFolders("projects")).find((candidate) => candidate.path.replaceAll("\\", "/").toLowerCase() === projectPublicationPath(folder, project.name).replaceAll("\\", "/").toLowerCase());
   if (catalogCollision) blockers.push("A project catalog already occupies the destination project folder path. Select a different catalog before publication.");
-  if (!reuseEmptyTarget && project.projectType !== "PCB_PROJECT") {
-    blockers.push("Native Designer migration currently supports PCB projects (.PrjPcb) only. No project will be published for this project type.");
+  if (!supportedProjectTypes.includes(project.projectType)) {
+    blockers.push(`Unsupported project type: ${project.projectType}. No project will be published.`);
+  } else if (reuseEmptyTarget && project.projectType !== "PCB_PROJECT") {
+    blockers.push("Existing-empty-target uploads are not available for harness or multiboard designs; use native publication.");
   }
   let existingTargetProject = null;
   let resumeTransfer = null;
@@ -809,6 +816,7 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
   let placementInvalid = false;
   let emptyTargetCheck = null;
   let targetApi = null;
+  let dependencies = null;
   try {
     targetApi = await checkProjectApiAccess({
       services: await discoverProjectUploadEndpoints(), token: tokens.target
@@ -826,6 +834,32 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
     } catch (error) {
       blockers.push(`The source Git repository cannot be read: ${error.message}`);
     }
+  }
+  if (project.projectType === "SYSTEM_DESIGN" && gitReadable) {
+    try {
+      const snapshot = await projectRepositorySnapshot("source", project);
+      const plan = await analyzeMultiboardDependencies({ project, snapshot,
+        listSources: () => listProjectsForMigration(false),
+        readTransfer: async (id) => {
+          const record = await readJsonFile(projectTransferRecordPath(id), null);
+          return record?.targetEndpoint === endpoints.target ? record : null;
+        },
+        getTarget: (id) => targetProjectRepository(id),
+        loadTarget: (child) => projectRepositorySnapshot("target", child),
+        verifyTarget: async ({ source, target, snapshot: child, record }) => {
+          const sourceHead = (await git(["ls-remote", source.repositoryUrl, "HEAD"], tokens.source)).stdout.trim().split(/\s+/)[0];
+          try { await git([`--git-dir=${child.mirrorPath}`, "merge-base", "--is-ancestor", sourceHead, child.head], tokens.target); }
+          catch { throw new Error("The destination child does not contain the current source history; migrate its current revision first."); }
+          const childFolder = await resolveTargetFolder("projects", record.targetFolderId);
+          await verifyTargetProjectPlacement(target.projectId, target.name, childFolder);
+          return (await verifyPublishedProjectCloud(target, { targetHead: child.head,
+            expectedDocuments: projectDesignDocuments(child.bytes, target.projectType) }, { attempts: 1 })).verified;
+        }
+      });
+      projectDependencyPlans.set(project.id, plan);
+      dependencies = { ready: plan.ready, children: plan.children, repositoryCache: snapshot.cache };
+      if (!plan.ready) blockers.push("Multiboard child projects must first be migrated and verified in the destination workspace. See the dependency list.");
+    } catch (error) { projectDependencyPlans.delete(project.id); blockers.push(`Multiboard dependency analysis failed: ${error.message}`); }
   }
   const previousTransfer = !reuseEmptyTarget ? await readJsonFile(projectTransferRecordPath(project.id), null) : null;
   if (!reuseEmptyTarget && (duplicates.length || previousTransfer)) {
@@ -879,6 +913,7 @@ async function projectMigrationPreflight(projectId, targetFolderId, forceRefresh
     targetFolder: { id: folder.id, folderId: folder.folderId, name: folder.name, path: folder.path },
     targetDuplicates: duplicates,
     targetApi,
+    dependencies,
     creationMode: reuseEmptyTarget ? "reuse-empty" : placementInvalid ? "placement-invalid" : completedTransfer ? "completed" : resumeTransfer ? "designer-resume" : "designer-native",
     resumeTransfer,
     alreadyMigrated: Boolean(completedTransfer),
@@ -925,6 +960,7 @@ async function projectDesignerReadiness(report, reuseEmptyTarget) {
     }
     designer = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
     if (!designer.projectFolderBindingSupported) throw new Error("Load Designer bridge 1.1.37 or later for native project folder verification.");
+    if (report.project.projectType !== "PCB_PROJECT" && !designer.supportedProjectTypes?.includes(report.project.projectType)) throw new Error("Load Designer bridge 1.1.38 or later for harness and multiboard publication.");
   } catch (error) { blockers.push(error.message); }
   return { ...report, designer, blockers, executable: blockers.length === 0 };
 }
@@ -955,9 +991,39 @@ async function git(args, token, options = {}) {
   }
 }
 
+async function projectRepositorySnapshot(workspace, project) {
+  projectKind(project.projectType);
+  const key = createHash("sha256").update(`${endpoints[workspace]}|${project.id}|${project.repositoryUrl}`).digest("hex");
+  if (projectSnapshotLoads.has(key)) return projectSnapshotLoads.get(key);
+  const load = (async () => {
+    const mirrorPath = path.join(cacheDir, "project-repositories", `${key}.git`), token = tokens[workspace];
+    const head = (await git(["ls-remote", project.repositoryUrl, "HEAD"], token)).stdout.trim().split(/\s+/)[0];
+    if (!/^[0-9a-f]{40,64}$/i.test(head || "")) throw new Error("The project repository has no readable default HEAD.");
+    const hit = existsSync(path.join(mirrorPath, "HEAD"));
+    if (!hit) { await mkdir(path.dirname(mirrorPath), { recursive: true }); await git(["clone", "--mirror", project.repositoryUrl, mirrorPath], token); }
+    else {
+      const origin = (await git([`--git-dir=${mirrorPath}`, "remote", "get-url", "origin"], token)).stdout.trim();
+      if (origin !== project.repositoryUrl) throw new Error("Cached project repository origin changed; inspect it before continuing.");
+      try { await git([`--git-dir=${mirrorPath}`, "cat-file", "-e", `${head}^{commit}`], token); }
+      catch { await git([`--git-dir=${mirrorPath}`, "fetch", "origin"], token); }
+    }
+    const entries = gitTreeEntries((await git([`--git-dir=${mirrorPath}`, "ls-tree", "-r", "-z", head], token)).stdout);
+    const files = new Map(entries.map((entry) => [entry.path.toLowerCase(), entry]));
+    const readFile = async (filename) => {
+      const entry = files.get(filename.replaceAll("\\", "/").toLowerCase());
+      if (!entry || entry.type !== "blob") throw new Error(`Missing project file in repository snapshot: ${filename}`);
+      return (await git([`--git-dir=${mirrorPath}`, "show", entry.oid], token, { encoding: "buffer" })).stdout;
+    };
+    const filename = await selectPublishedProjectFile(entries.map((entry) => entry.path), project.projectId, readFile, project.projectType);
+    const bytes = await readFile(filename); assertProjectDocuments(filename, bytes, entries);
+    return { mirrorPath, head, entries, filename, bytes, readFile, cache: { hit, head } };
+  })().finally(() => projectSnapshotLoads.delete(key));
+  projectSnapshotLoads.set(key, load); return load;
+}
+
 async function targetProjectRepository(projectId, { allowExternal = false, includeCounts = false } = {}) {
   const query = `query TargetMigratedProject($id: ID!) {
-    desProjectById(id: $id) { id projectId name repositoryType repositoryUrl url design { releases(first: 1) { totalCount } } }
+    desProjectById(id: $id) { id projectId name projectType repositoryType repositoryUrl url design { releases(first: 1) { totalCount } } }
   }`;
   let lastError = null;
   for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -1013,6 +1079,50 @@ async function inspectEmptyTargetProject(project) {
   }
 }
 
+async function prepareMultiboardWorkingCopy(project, filename, workingCopy, tempRoot, mirrorPath) {
+  const plan = projectDependencyPlans.get(project.id);
+  if (!plan?.ready) throw new Error("Multiboard dependencies have not been verified. No project was published.");
+  const head = (await git([`--git-dir=${mirrorPath}`, "rev-parse", "HEAD"], tokens.source)).stdout.trim();
+  if (head !== plan.sourceHead || filename !== plan.sourceFilename) throw new Error("The source multiboard changed after dependency analysis. Refresh its analysis before migration.");
+  const roots = new Set(), dependencyMappings = [];
+  for (const mapping of plan.mappings) {
+    const sourceDirectory = path.posix.dirname(mapping.sourceProjectFilename);
+    const relativeRoot = path.posix.normalize(path.posix.join(path.posix.dirname(filename), path.posix.dirname(mapping.sourceReference.replaceAll("\\", "/")), path.posix.relative(sourceDirectory, ".")));
+    const childRoot = childMigrationWorkspace(workingCopy, tempRoot, relativeRoot, roots);
+    if (existsSync(childRoot)) {
+      throw new Error("Child workspace paths overlap or leave the dedicated migration directory. No project was published.");
+    }
+    roots.add(childRoot.toLowerCase());
+    const origin = path.join(tempRoot, "child-origins", `${mapping.targetGuid}.git`); await mkdir(path.dirname(origin), { recursive: true });
+    await git(["clone", "--bare", mapping.mirrorPath, origin], tokens.target);
+    await git(["clone", origin, childRoot], tokens.target);
+    await git(["-C", childRoot, "checkout", "--detach", mapping.targetHead], tokens.target);
+    const childBytes = await readFile(path.join(childRoot, mapping.targetProjectFilename));
+    if (managedProjectGuid(childBytes).toLowerCase() !== mapping.targetGuid.toLowerCase()) throw new Error("The cloned child does not carry its verified destination GUID.");
+    dependencyMappings.push({ ...mapping, localWorkingCopy: childRoot });
+  }
+  const sourceEntries = gitTreeEntries((await git([`--git-dir=${mirrorPath}`, "ls-tree", "-r", "-z", head], tokens.source)).stdout);
+  const documentTransformations = [];
+  for (const change of plan.changes) {
+    const fullPath = path.resolve(workingCopy, change.path);
+    if (!fullPath.startsWith(path.resolve(workingCopy) + path.sep) || !/\.MbsDoc$/i.test(change.path)) throw new Error("Invalid multiboard schematic transformation path.");
+    await writeFile(fullPath, change.bytes);
+    const targetOid = (await git(["-C", workingCopy, "hash-object", "--no-filters", "--", change.path], tokens.source)).stdout.trim();
+    const sourceOid = sourceEntries.find((entry) => entry.path === change.path)?.oid;
+    if (!sourceOid) throw new Error("Original multiboard schematic is absent from the source snapshot.");
+    documentTransformations.push({ path: change.path, sourceOid, targetOid, purpose: "verified-global-child-links" });
+  }
+  await writeFile(path.join(workingCopy, filename), plan.projectBytes);
+  return { dependencyMappings, documentTransformations };
+}
+
+async function assertDependencyTargetsUnchanged(record) {
+  for (const mapping of record.dependencyMappings || []) {
+    const head = (await git(["ls-remote", mapping.repositoryUrl, "HEAD"], tokens.target)).stdout.trim().split(/\s+/)[0];
+    if (head !== mapping.targetHead) throw new Error("A destination child changed during the native transfer. Inspect the existing parent project before resuming.");
+  }
+}
+
 async function createTargetProjectThroughDesigner(project, folder, mirrorPath, tempRoot, resumeTransfer = null) {
   // A new local bare origin prevents Designer from ever pushing to the source.
   const localOrigin = path.join(tempRoot, "temporary-origin.git");
@@ -1022,7 +1132,7 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
     await git(["clone", localOrigin, workingCopy], tokens.source);
   }
   const listing = await git(["-C", workingCopy, "ls-files", "-z"], tokens.source);
-  const filename = selectMigrationProjectFile(listing.stdout.split("\0").filter(Boolean), project.name, resumeTransfer?.projectFilename);
+  const filename = selectMigrationProjectFile(listing.stdout.split("\0").filter(Boolean), project.name, resumeTransfer?.projectFilename, project.projectType);
   const projectPaths = await validateMigrationProjectPath(workingCopy, filename);
   const { projectFullPath, workingCopyPath } = projectPaths;
   if (!resumeTransfer) {
@@ -1031,7 +1141,7 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
     if (managedProjectGuid(bytes).toLowerCase() !== project.projectId.toLowerCase()) throw new Error("The selected project file is not bound to the requested source project. No project was published.");
     assertProjectDocuments(filename, bytes, tree);
     for (const entry of tree) {
-      if (/\.(SchDoc|PcbDoc|PrjPcb|SchLib|PcbLib)$/i.test(entry.path)) {
+      if (/\.(SchDoc|PcbDoc|PrjPcb|PrjHar|PrjMbd|WirDoc|LdrDoc|MbsDoc|MbaDoc|SchLib|PcbLib)$/i.test(entry.path)) {
         const blob = await git([`--git-dir=${mirrorPath}`, "cat-file", "-s", entry.oid], tokens.source);
         if (Number(blob.stdout) < 1024 && (await git([`--git-dir=${mirrorPath}`, "show", entry.oid], tokens.source)).stdout.startsWith("version https://git-lfs.github.com/spec/")) throw new Error(`Git LFS document requires its original binary before migration: ${entry.path}`);
       }
@@ -1041,22 +1151,25 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
     const status = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
     if (!status.nestedProjectPathsSupported) throw new Error("Load Designer bridge 1.1.36 or later to migrate a PCB project stored in a Git subfolder. No project was published.");
   }
+  const dependencyChanges = !resumeTransfer && project.projectType === "SYSTEM_DESIGN"
+    ? await prepareMultiboardWorkingCopy(project, filename, workingCopy, tempRoot, mirrorPath) : {};
   let record = resumeTransfer || { sourceProjectId: project.id, sourceHead: (await git([`--git-dir=${mirrorPath}`, "rev-parse", "HEAD"], tokens.source)).stdout.trim(),
-    targetEndpoint: endpoints.target, targetFolderId: folder.id, tempRoot, localWorkingCopy: workingCopy, projectFilename: filename, phase: "prepared" };
+    targetEndpoint: endpoints.target, targetFolderId: folder.id, tempRoot, localWorkingCopy: workingCopy, projectFilename: filename, sourceProjectFilename: filename, projectType: project.projectType, phase: "prepared", ...dependencyChanges };
   let published;
   if (resumeTransfer) {
     published = { projectGuid: resumeTransfer.targetProjectGuid, workspace: await designerBridgeRequest("/v1/projects/migration-status") };
   } else {
     await writeFile(projectFullPath, detachManagedProject(await readFile(projectFullPath)));
-    await git(["-C", workingCopy, "add", "--", filename], tokens.source);
+    await git(["-C", workingCopy, "add", "--", filename, ...(record.documentTransformations || []).map((change) => change.path)], tokens.source);
     await git(["-C", workingCopy, "-c", "user.name=Altium Migration Assistant", "-c", "user.email=altium-migration@localhost",
       "commit", "--allow-empty", "-m", "Detach migration copy from source workspace"], tokens.source);
     await git(["-C", workingCopy, "push", "origin", "HEAD"], tokens.source);
     const destination = assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
     record = { ...record, phase: "publication-in-flight", targetWorkspaceGuid: destination.workspaceGuid };
     await saveProjectTransfer(record);
+    await assertDependencyTargetsUnchanged(record);
     published = await projectNativeRequest(altiumDesignerBridgeUrl, altiumDesignerBridgeToken, "/v1/projects/publish-migration", {
-      projectFullPath, workingCopyPath, name: project.name, description: nativeProjectDescription(project.description),
+      projectFullPath, workingCopyPath, projectType: project.projectType, name: project.name, description: nativeProjectDescription(project.description),
       folderPath: projectPublicationPath(folder, project.name), workspaceUrl: endpoints.target
     });
   }
@@ -1067,7 +1180,9 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
   record = { ...record, targetProjectGuid: guid, targetProjectId: targetId };
   await saveProjectTransfer(record);
   const registration = await targetProjectRepository(targetId, { allowExternal: true });
+  if (registration.projectType !== project.projectType) throw new Error("The destination project type differs from the selected source. Inspect the recorded target before resuming.");
   if (registration.repositoryType === "EXTERNAL") {
+    await assertDependencyTargetsUnchanged(record);
     assertDesignerDestination(await designerBridgeRequest("/v1/projects/migration-status"), endpoints.target);
     const nativeScriptPath = path.join(tempRoot, `complete-vcs-${Date.now()}.pas`);
     const nativeEvidencePath = `${nativeScriptPath}.result.txt`;
@@ -1081,9 +1196,10 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
     if (!/^returned$/m.test(evidence.replaceAll("\r", ""))) throw new Error("The native VCS migration has not returned a completion marker. Inspect Designer before retrying.");
     record = { ...record, phase: "native-returned" };
     await saveProjectTransfer(record);
+    await assertDependencyTargetsUnchanged(record);
   }
   const target = await targetProjectRepository(targetId);
-  const publishedFilename = await publishedProjectWorkingCopyFile(workingCopy, guid);
+  const publishedFilename = await publishedProjectWorkingCopyFile(workingCopy, guid, project.projectType);
   record = { ...record, sourceProjectFilename: record.sourceProjectFilename || record.projectFilename, projectFilename: publishedFilename };
   await saveProjectTransfer(record);
   if (!workspace.projectFolderBindingSupported) throw new Error("Load Designer bridge 1.1.37 or later to verify and complete the native project folder binding.");
@@ -1098,7 +1214,7 @@ async function createTargetProjectThroughDesigner(project, folder, mirrorPath, t
   return { ...target, migrationFilename: publishedFilename, localWorkingCopy: workingCopy };
 }
 
-async function verifyDesignerProjectHistory(project, mirrorPath, tempRoot, sourceOutput) {
+async function verifyDesignerProjectHistory(project, mirrorPath, tempRoot, sourceOutput, sourceProject) {
   const audit = path.join(await mkdtemp(path.join(tempRoot, "destination-audit-")), "repository.git");
   await git(["clone", "--mirror", project.repositoryUrl, audit], tokens.target);
   const targetHead = (await git([`--git-dir=${audit}`, "rev-parse", "HEAD"], tokens.target)).stdout.trim();
@@ -1125,20 +1241,27 @@ async function verifyDesignerProjectHistory(project, mirrorPath, tempRoot, sourc
   });
   const targetFiles = await git([`--git-dir=${audit}`, "ls-tree", "-r", "-z", "--name-only", targetHead], tokens.target);
   const publishedFilename = await selectPublishedProjectFile(targetFiles.stdout.split("\0").filter(Boolean), project.projectId,
-    async (filename) => (await git([`--git-dir=${audit}`, "show", `${targetHead}:${filename}`], tokens.target, { encoding: "buffer" })).stdout);
+    async (filename) => (await git([`--git-dir=${audit}`, "show", `${targetHead}:${filename}`], tokens.target, { encoding: "buffer" })).stdout, project.projectType);
   const savedProject = await git([`--git-dir=${audit}`, "show", `${targetHead}:${publishedFilename}`], tokens.target, { encoding: "buffer" });
   if (managedProjectGuid(savedProject.stdout).toLowerCase() !== project.projectId.replace(/[{}]/g, "").toLowerCase()) {
     throw new Error("The published default branch is not bound to the destination project. No successful migration was recorded.");
   }
-  const expectedDocuments = projectDesignDocuments(savedProject.stdout);
+  const expectedDocuments = projectDesignDocuments(savedProject.stdout, project.projectType);
   const sourceTree = gitTreeEntries((await git([`--git-dir=${mirrorPath}`, "ls-tree", "-r", "-z", sourceHead], tokens.source)).stdout);
   const targetTree = gitTreeEntries((await git([`--git-dir=${audit}`, "ls-tree", "-r", "-z", targetHead], tokens.target)).stdout);
   assertProjectDocuments(publishedFilename, savedProject.stdout, targetTree);
-  const fileVerification = assertSourceFilesPreserved(sourceTree, targetTree);
-  return { ...verification, projectFilename: publishedFilename, sourceHead, targetHead, expectedDocuments, fileVerification };
+  const record = await readJsonFile(projectTransferRecordPath(sourceProject.id), null);
+  if (project.projectType === "SYSTEM_DESIGN") {
+    const expected = new Set((record?.dependencyMappings || []).map((mapping) => mapping.targetGuid.toLowerCase()));
+    const children = projectChildProjects(savedProject.stdout);
+    if (children.length !== expected.size || children.some((child) => !expected.has(child.projectGuid.toLowerCase()))) throw new Error("The published multiboard child GUIDs differ from the verified destination mapping.");
+  }
+  const fileVerification = assertSourceFilesPreserved(sourceTree, targetTree, { sourceProjectFilename: record?.sourceProjectFilename,
+    transformations: record?.documentTransformations || [] });
+  return { ...verification, projectType: project.projectType, projectFilename: publishedFilename, sourceHead, targetHead, expectedDocuments, fileVerification };
 }
 
-async function verifyPublishedProjectCloud(project, historyVerification) {
+async function verifyPublishedProjectCloud(project, historyVerification, waitOptions = {}) {
   const entity = await targetProjectEntity(project.projectId);
   const nativeDetails = new URL(projectPlacementDetailsUrl(entity, endpoints.target, project.projectId));
   nativeDetails.pathname = `/multicad/api/v1.0/projects/${project.projectId}/details`;
@@ -1151,8 +1274,8 @@ async function verifyPublishedProjectCloud(project, historyVerification) {
     const targetHead = historyVerification.targetHead || current?.latestRevision?.revisionId;
     if (!targetHead || current?.latestRevision?.revisionId !== targetHead) throw new Error("The destination changed during cloud validation. Inspect the existing target before resuming.");
     return projectCloudState({ projectGuid: project.projectId, targetHead, details,
-      variants: current?.design?.variants || [], expectedDocuments: historyVerification.expectedDocuments || (current?.latestRevision?.files || []).map((file) => file.path) });
-  }, projectCloudWaitOptions);
+      projectType: project.projectType || historyVerification.projectType || "PCB_PROJECT", variants: current?.design?.variants || [], expectedDocuments: historyVerification.expectedDocuments || (current?.latestRevision?.files || []).map((file) => file.path) });
+  }, { ...projectCloudWaitOptions, ...waitOptions });
 }
 
 async function finishProjectCloudValidation(project, folder, targetProject, record, creationMode) {
@@ -1217,7 +1340,7 @@ async function migrateProjectWithHistory(projectId, targetFolderId, reuseEmptyTa
 
     const historyVerification = reuseEmptyTarget
       ? assertMirroredProjectRefs(sourceRefs.stdout, (await git(["ls-remote", targetProject.repositoryUrl], tokens.target)).stdout)
-      : await verifyDesignerProjectHistory(targetProject, mirrorPath, tempRoot, sourceRefs.stdout);
+      : await verifyDesignerProjectHistory(targetProject, mirrorPath, tempRoot, sourceRefs.stdout, project);
 
     // Recheck the native association after history transfer, including
     // the existing-empty-target path, before recording any successful migration.

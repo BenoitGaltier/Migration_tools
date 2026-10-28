@@ -1156,3 +1156,6 @@ aside {
   }
 }
 
+.project-dependencies { margin-top: 16px; }
+.project-dependencies .dependency-row { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid var(--border, #d5dfeb); }
+.project-dependencies .dependency-row small { overflow-wrap: anywhere; color: var(--muted, #60728b); }
