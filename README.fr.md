@@ -17,10 +17,15 @@ sous-module dans `altium-extension/Fluidra.DxpBridge`.
   publication des éléments dans la destination.
 - SDK .NET 10 pour compiler le moteur de prévisualisation des bibliothèques.
 - Pour publier les projets : Altium Designer avec une licence active, connecté au
-  workspace cible, et le bridge DXP. Sa compilation nécessite le SDK Altium ; voir
-  les [instructions du bridge](altium-extension/Fluidra.DxpBridge/README.md).
+  workspace cible, et le bridge DXP. Sa compilation nécessite Altium Developer
+  SDK 4.0 et MSBuild .NET Framework, utilisés par le script de compilation.
 
 ## Installation
+
+Exécuter ces commandes dans PowerShell, puis rester à la racine du dépôt pour les
+étapes suivantes.
+
+### 1. Récupérer l'application et le bridge
 
 ```powershell
 git clone --recurse-submodules https://github.com/BenoitGaltier/Migration_tools.git
@@ -29,6 +34,11 @@ npm ci
 Copy-Item .env.example .env
 ```
 
+Le clone récursif récupère la version du bridge fixée par l'application. Si les
+sous-modules manquent, exécuter `git submodule update --init --recursive`.
+
+### 2. Configurer les workspaces
+
 Renseigner `.env` en suivant [.env.example](.env.example) :
 
 - `ALTIUM_SOURCE_WORKSPACES_JSON` : workspaces sources et tokens API.
@@ -36,15 +46,56 @@ Renseigner `.env` en suivant [.env.example](.env.example) :
 - `ACTIVE_SOURCE_WORKSPACE` : source sélectionnée au démarrage.
 - `ALTIUM_DESIGNER_BRIDGE_TOKEN` : token local partagé, au moins 24 caractères aléatoires.
 
-Compiler le moteur de prévisualisation selon [renderer/README.md](renderer/README.md).
-Pour migrer des projets, fermer Designer puis installer le bridge depuis une
-fenêtre PowerShell administrateur :
+Pour chaque workspace, renseigner son libellé, son URL GraphQL et son token.
+Conserver les valeurs JSON sur une seule ligne, ainsi que
+`ALTIUM_DESIGNER_BRIDGE_URL=http://127.0.0.1:4174` et `ALTIUM_USE_SYSTEM_CA=true`.
+Ne jamais versionner le fichier `.env` ainsi renseigné.
+
+### 3. Compiler le moteur de prévisualisation
+
+Avec le SDK .NET 10 installé, récupérer la version fixée d'AltiumSharp, appliquer
+le correctif local et publier le moteur :
 
 ```powershell
-.\altium-extension\Fluidra.DxpBridge\install-local.ps1
+git clone --recurse-submodules https://github.com/issus/AltiumSharp .diagnostics/AltiumSharp-src
+git -C .diagnostics/AltiumSharp-src checkout ce72437f30cd54f549601d4e0ca5846d21272150
+git -C .diagnostics/AltiumSharp-src submodule update --init --recursive
+git -C .diagnostics/AltiumSharp-src apply ../../renderer/AltiumSharp-local.patch
+dotnet publish renderer/Fluidra.AltiumRenderer/Fluidra.AltiumRenderer.csproj `
+  -c Release -p:NuGetAudit=false -o renderer/runtime
 ```
 
-Rouvrir Designer, le connecter au workspace cible, puis démarrer l'application :
+Le runtime généré reste local et exclu de Git. Voir
+[renderer/README.md](renderer/README.md) pour les détails du moteur.
+
+### 4. Installer et vérifier le bridge Designer
+
+Le bridge est nécessaire à la publication native des projets et à l'enrichissement
+Designer. Installer Altium Developer avec SDK 4.0 pour l'installation Designer, puis :
+
+1. Enregistrer les travaux et fermer complètement Designer.
+2. Ouvrir PowerShell **en administrateur** et revenir à la racine du dépôt.
+3. Lancer l'installateur : il compile et installe l'extension, puis lit le token dans
+   le fichier `.env` de l'application.
+
+```powershell
+.\altium-extension\Fluidra.DxpBridge\install-local.ps1 -Configuration Release
+```
+
+4. Rouvrir Designer et le connecter au **workspace cible**.
+5. Vérifier que le bridge indique sa version et ses capacités :
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4174/health
+```
+
+Dans **Configuration**, vérifier l'URL du bridge et utiliser **Tester le bridge**
+avec le même token. Pour l'installation manuelle ou la compilation seule, voir le
+[guide du bridge](altium-extension/Fluidra.DxpBridge/README.md).
+
+### 5. Démarrer l'application
+
+Depuis une fenêtre PowerShell normale, à la racine du dépôt :
 
 ```powershell
 npm start
